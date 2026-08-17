@@ -80,6 +80,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # There is no Windows entry in the test matrix (the suite's stub
+      # binaries are POSIX shell scripts), so cross-vet the Windows build
+      # here to keep the port release.yml ships from silently rotting.
+      - name: Vet Windows build
+        if: matrix.platform == 'ubuntu-24.04'
+        env:
+          GOOS: windows
+        run: go vet ./...
+
       - name: Test
         run: go test -race ./...
 

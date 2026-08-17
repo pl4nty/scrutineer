@@ -4,13 +4,13 @@ A local tool for scanning open source repositories for security vulnerabilities 
 
 ## Quick start
 
-You need one supported container runtime: [Docker](https://docs.docker.com/get-docker/) (the default), rootless Podman, or Apple's `container` CLI.
+You need one supported container runtime: [Docker](https://docs.docker.com/get-docker/) (the default), rootless Podman, or Apple's `container` CLI. On Windows, use [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) with the WSL 2 backend; scans run in Linux containers there just as on the other platforms (see [Windows](#windows)).
 
 Install Scrutineer from [Homebrew](https://brew.sh) on macOS or Linux:
 
     brew install scrutineer
 
-Alternatively, download the Linux or macOS archive for your architecture from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases), verify it against `SHA256SUMS`, and put `scrutineer` on your `PATH`. The macOS archives are currently unsigned and not notarized, so macOS may present a Gatekeeper warning even after you verify the checksum and GitHub build-provenance attestation.
+Alternatively, download the Linux, macOS, or Windows archive for your architecture from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases), verify it against `SHA256SUMS`, and put `scrutineer` (`scrutineer.exe` from the Windows zip) on your `PATH`. The macOS archives are currently unsigned and not notarized, so macOS may present a Gatekeeper warning even after you verify the checksum and GitHub build-provenance attestation; the Windows executables are likewise unsigned, so SmartScreen may warn on first run.
 
 To build or run from source instead, install [Go 1.27+](https://go.dev/dl/):
 
@@ -48,7 +48,7 @@ You can also build a checkout-independent executable and run it from another dir
     install -m 0755 scrutineer ~/.local/bin/scrutineer
     scrutineer
 
-Precompiled binaries cover Linux and macOS on `amd64` and `arm64`. Run `scrutineer --version` (or `scrutineer version`) to see the application version, source commit, build timestamp, and exact runner-image digest paired with that release.
+Precompiled binaries cover Linux, macOS, and Windows on `amd64` and `arm64`. Run `scrutineer --version` (or `scrutineer version`) to see the application version, source commit, build timestamp, and exact runner-image digest paired with that release.
 
 The executable does not bundle Docker, Podman, or Apple's `container` CLI. Scrutineer remains a host application that asks the selected external runtime to launch an ephemeral runner container for each scan; it materialises the embedded profile Dockerfiles under the data directory when `docker/profiles` is not available from a source checkout. Content-addressed skill and profile bundles from older versions are retained because existing skill records may still reference their auxiliary files; incomplete extraction directories older than 24 hours are removed automatically. To run under codex, opencode, or copilot instead, see the [Codex backend](#codex-backend), [Opencode backend](#opencode-backend), and [Copilot backend](#copilot-backend) sections; only the credential and `-backend` flag change.
 
@@ -329,6 +329,16 @@ Requirements and notes:
 - **Hardened mode**: `--hardened` is supported. Each container runs in its own lightweight VM, so the VM boundary is the isolation; `container network create --internal` is a vmnet host-only network (egress blocked, host proxy reachable) and each hardened scan proves that fail-closed before running. The one `--hardened` flag Apple's CLI cannot set is `--security-opt no-new-privileges`, which the per-container VM boundary substitutes for (Apple's own untrusted-code sandbox hardens the same way). `--hardened-runtime-only` is a rootless-podman concept and is refused; use `--hardened`.
 
 The `docker build` commands shown for the runner image and profiles can be run as `container build` when you use this runtime. See [docs/apple.md](docs/apple.md) for the full parity matrix, the VM-isolation security model, and how hardened mode works.
+
+## Windows
+
+Windows is supported as a host platform: download the `windows-amd64` or `windows-arm64` zip from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases) (or build from source with `go build ./cmd/scrutineer`) and run `scrutineer.exe`. Scans still execute in Linux containers, launched through [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) with the WSL 2 backend under the default `--runtime docker`. Notes:
+
+- **Non-root container user** -- on Linux and macOS every scan container runs as the invoking host user via `--user uid:gid`. Windows has no uid/gid to map, so the flag is omitted and scans run as the runner image's own non-root `runner` user instead; the non-root baseline is preserved. Docker Desktop presents Windows bind mounts as world-writable inside its Linux VM, so scan output still lands readable and writable on the host.
+- **Runtimes** -- Docker Desktop is the supported engine. `--runtime apple` is macOS-only, and `--runtime podman` (via `podman machine`) is untested on Windows. SELinux relabeling and rootless `--userns=keep-id` do not apply; `--selinux auto` correctly detects nothing to do.
+- **`--no-container`** -- works with a native Windows Claude Code install (`claude` on `PATH`), with the same reduced isolation as on other platforms. On Windows there is no process group to signal, so cleanup of any helper processes a cancelled run leaves behind is best-effort (containerised scans are unaffected: `--rm` cleans up).
+- **Local directory scans** -- copying a tree that contains symlinks requires the symlink-creation privilege (enable Windows Developer Mode); without it those scans fail with a permission error.
+- **Verification** -- Windows releases ship as `.zip`; verify them against `SHA256SUMS` and the GitHub build-provenance attestation exactly like the tar archives. The executables are not code-signed, so SmartScreen may warn on first run.
 
 ## Flags
 

@@ -190,6 +190,14 @@ jobs:
             goarch: amd64
             runner: macos-26
             run_binary: false
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+            run_binary: true
+          - goos: windows
+            goarch: arm64
+            runner: windows-2025
+            run_binary: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -219,10 +227,15 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           BUILD_DATE=$(git show -s --format=%cI "${COMMIT_SHA}")
+          BIN=scrutineer
+          if [[ "${GOOS}" == "windows" ]]; then
+            BIN=scrutineer.exe
+          fi
+          echo "BIN=${BIN}" >> "${GITHUB_ENV}"
           mkdir -p dist
           CGO_ENABLED=0 go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT_SHA} -X main.buildDate=${BUILD_DATE} -X main.defaultRunnerImage=${RUNNER_IMAGE}" \
-            -o dist/scrutineer ./cmd/scrutineer
+            -o "dist/${BIN}" ./cmd/scrutineer
 
       - name: Validate executable
         if: matrix.run_binary
@@ -230,7 +243,7 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.version }}
           RUNNER_IMAGE: ${{ needs.preflight.outputs.runner_image }}
         run: |
-          OUTPUT=$(dist/scrutineer --version)
+          OUTPUT=$("dist/${BIN}" --version)
           grep -F "scrutineer ${VERSION}" <<< "${OUTPUT}"
           grep -F "runner: ${RUNNER_IMAGE}" <<< "${OUTPUT}"
 
@@ -239,6 +252,15 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          # The Windows runner's Git Bash has no `file`; the two-byte MZ magic
+          # is enough to prove a PE executable came out of the cross-build.
+          if [[ "${GOOS}" == "windows" ]]; then
+            if [[ "$(head -c 2 "dist/${BIN}")" != "MZ" ]]; then
+              echo "::error::${GOOS}-${GOARCH} artifact is not a PE executable"
+              exit 1
+            fi
+            exit 0
+          fi
           file dist/scrutineer
           if [[ "${GOOS}" == "linux" ]]; then
             if readelf -l dist/scrutineer | grep -q 'Requesting program interpreter'; then
@@ -253,23 +275,32 @@ jobs:
       - name: Package
         run: |
           mkdir -p package
-          cp dist/scrutineer LICENSE README.md package/
-          TAR_FLAGS=(--no-xattrs)
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            TAR_FLAGS+=(--no-mac-metadata)
+          cp "dist/${BIN}" LICENSE README.md package/
+          # Windows convention is a zip (Explorer opens it natively); the
+          # runner ships 7-Zip on PATH. Everything else stays tar.gz.
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            ARCHIVE="${ARTIFACT}.zip"
+            (cd package && 7z a -tzip "../${ARCHIVE}" ./*)
+          else
+            ARCHIVE="${ARTIFACT}.tar.gz"
+            TAR_FLAGS=(--no-xattrs)
+            if [[ "${RUNNER_OS}" == "macOS" ]]; then
+              TAR_FLAGS+=(--no-mac-metadata)
+            fi
+            /usr/bin/tar "${TAR_FLAGS[@]}" -czf "${ARCHIVE}" -C package .
           fi
-          /usr/bin/tar "${TAR_FLAGS[@]}" -czf "${ARTIFACT}.tar.gz" -C package .
+          echo "ARCHIVE=${ARCHIVE}" >> "${GITHUB_ENV}"
 
       - name: Generate build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ env.ARTIFACT }}.tar.gz
+          subject-path: ${{ env.ARCHIVE }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARTIFACT }}
-          path: ${{ env.ARTIFACT }}.tar.gz
+          path: ${{ env.ARCHIVE }}
           if-no-files-found: error
 
   release:
@@ -290,7 +321,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: artifacts
-        run: sha256sum -- *.tar.gz > SHA256SUMS
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
 
       - name: Create GitHub release
         env:
@@ -328,7 +359,7 @@ jobs:
           gh release upload "${TAG}" \
             --repo "${REPOSITORY}" \
             --clobber \
-            artifacts/*.tar.gz artifacts/SHA256SUMS
+            artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS
           gh release edit "${TAG}" \
             --repo "${REPOSITORY}" \
             --draft=false
