@@ -252,8 +252,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # The Windows runner's Git Bash has no `file`; the two-byte MZ magic
-          # is enough to prove a PE executable came out of the cross-build.
           if [[ "${GOOS}" == "windows" ]]; then
             if [[ "$(head -c 2 "dist/${BIN}")" != "MZ" ]]; then
               echo "::error::${GOOS}-${GOARCH} artifact is not a PE executable"
@@ -276,31 +274,22 @@ jobs:
         run: |
           mkdir -p package
           cp "dist/${BIN}" LICENSE README.md package/
-          # Windows convention is a zip (Explorer opens it natively); the
-          # runner ships 7-Zip on PATH. Everything else stays tar.gz.
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            ARCHIVE="${ARTIFACT}.zip"
-            (cd package && 7z a -tzip "../${ARCHIVE}" ./*)
-          else
-            ARCHIVE="${ARTIFACT}.tar.gz"
-            TAR_FLAGS=(--no-xattrs)
-            if [[ "${RUNNER_OS}" == "macOS" ]]; then
-              TAR_FLAGS+=(--no-mac-metadata)
-            fi
-            /usr/bin/tar "${TAR_FLAGS[@]}" -czf "${ARCHIVE}" -C package .
+          TAR_FLAGS=(--no-xattrs)
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            TAR_FLAGS+=(--no-mac-metadata)
           fi
-          echo "ARCHIVE=${ARCHIVE}" >> "${GITHUB_ENV}"
+          /usr/bin/tar "${TAR_FLAGS[@]}" -czf "${ARTIFACT}.tar.gz" -C package .
 
       - name: Generate build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ env.ARCHIVE }}
+          subject-path: ${{ env.ARTIFACT }}.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARTIFACT }}
-          path: ${{ env.ARCHIVE }}
+          path: ${{ env.ARTIFACT }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -321,7 +310,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: artifacts
-        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
+        run: sha256sum -- *.tar.gz > SHA256SUMS
 
       - name: Create GitHub release
         env:
@@ -359,7 +348,7 @@ jobs:
           gh release upload "${TAG}" \
             --repo "${REPOSITORY}" \
             --clobber \
-            artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS
+            artifacts/*.tar.gz artifacts/SHA256SUMS
           gh release edit "${TAG}" \
             --repo "${REPOSITORY}" \
             --draft=false

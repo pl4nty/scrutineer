@@ -2,19 +2,18 @@
 
 package worker
 
-// Windows side of the platform seam for launching runtime/harness child
-// processes. See platform_unix.go for the Unix half; the two files must
-// declare the same functions.
+// Windows counterparts to platform_unix.go; see that file for what the seam
+// covers and why.
 
 import (
 	"os/exec"
 	"syscall"
 )
 
-// setNewProcessGroup detaches the child from the console's Ctrl+C group --
-// the closest Windows analogue to Setpgid's intent on Unix -- so a console
-// interrupt reaches scrutineer's own graceful shutdown first instead of
-// being broadcast straight to every child.
+// setNewProcessGroup detaches the child from the console's Ctrl+C group -- the
+// closest Windows analogue to Setpgid's intent -- so a console interrupt
+// reaches scrutineer's own graceful shutdown first instead of being broadcast
+// straight to every child.
 func setNewProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 }
@@ -29,10 +28,10 @@ func terminateProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-// containerUserArgs returns no `--user` flag on Windows: there is no host
-// uid/gid to map (os.Getuid reports -1), and Docker Desktop's Linux VM
-// presents Windows bind mounts as world-writable regardless of container
-// uid, so the runner image's own non-root `runner` user applies instead.
+// containerUserArgs returns no `--user` flag: there is no host uid/gid to map
+// (os.Getuid reports -1), and Docker Desktop's Linux VM presents Windows bind
+// mounts as world-writable regardless of container uid, so the runner image's
+// own non-root `runner` user applies instead.
 func containerUserArgs() []string {
 	return nil
 }

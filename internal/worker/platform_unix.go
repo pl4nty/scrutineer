@@ -2,9 +2,10 @@
 
 package worker
 
-// Unix side of the platform seam for launching runtime/harness child
-// processes. See platform_windows.go for the Windows half; the two files
-// must declare the same functions.
+// Platform seam for launching runtime/harness child processes. Process-group
+// handling and the container --user mapping are the two places the runner
+// depends on Unix process semantics; platform_windows.go carries their
+// Windows counterparts.
 
 import (
 	"fmt"

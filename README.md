@@ -4,13 +4,13 @@ A local tool for scanning open source repositories for security vulnerabilities 
 
 ## Quick start
 
-You need one supported container runtime: [Docker](https://docs.docker.com/get-docker/) (the default), rootless Podman, or Apple's `container` CLI. On Windows, use [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) with the WSL 2 backend; scans run in Linux containers there just as on the other platforms (see [Windows](#windows)).
+You need one supported container runtime: [Docker](https://docs.docker.com/get-docker/) (the default), rootless Podman, or Apple's `container` CLI.
 
 Install Scrutineer from [Homebrew](https://brew.sh) on macOS or Linux:
 
     brew install scrutineer
 
-Alternatively, download the Linux, macOS, or Windows archive for your architecture from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases), verify it against `SHA256SUMS`, and put `scrutineer` (`scrutineer.exe` from the Windows zip) on your `PATH`. The macOS archives are currently unsigned and not notarized, so macOS may present a Gatekeeper warning even after you verify the checksum and GitHub build-provenance attestation; the Windows executables are likewise unsigned, so SmartScreen may warn on first run.
+Alternatively, download the Linux, macOS, or Windows archive for your architecture from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases), verify it against `SHA256SUMS`, and put `scrutineer` (`scrutineer.exe` on Windows) on your `PATH`. The macOS archives are currently unsigned and not notarized, so macOS may present a Gatekeeper warning even after you verify the checksum and GitHub build-provenance attestation; the Windows executables are likewise unsigned, so SmartScreen may warn on first run.
 
 To build or run from source instead, install [Go 1.27+](https://go.dev/dl/):
 
@@ -332,13 +332,11 @@ The `docker build` commands shown for the runner image and profiles can be run a
 
 ## Windows
 
-Windows is supported as a host platform: download the `windows-amd64` or `windows-arm64` zip from [GitHub Releases](https://github.com/alpha-omega-security/scrutineer/releases) (or build from source with `go build ./cmd/scrutineer`) and run `scrutineer.exe`. Scans still execute in Linux containers, launched through [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) with the WSL 2 backend under the default `--runtime docker`. Notes:
+Windows hosts run scans through [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) with the WSL 2 backend under the default `--runtime docker`. Differences from Linux and macOS:
 
-- **Non-root container user** -- on Linux and macOS every scan container runs as the invoking host user via `--user uid:gid`. Windows has no uid/gid to map, so the flag is omitted and scans run as the runner image's own non-root `runner` user instead; the non-root baseline is preserved. Docker Desktop presents Windows bind mounts as world-writable inside its Linux VM, so scan output still lands readable and writable on the host.
-- **Runtimes** -- Docker Desktop is the supported engine. `--runtime apple` is macOS-only, and `--runtime podman` (via `podman machine`) is untested on Windows. SELinux relabeling and rootless `--userns=keep-id` do not apply; `--selinux auto` correctly detects nothing to do.
-- **`--no-container`** -- works with a native Windows Claude Code install (`claude` on `PATH`), with the same reduced isolation as on other platforms. On Windows there is no process group to signal, so cleanup of any helper processes a cancelled run leaves behind is best-effort (containerised scans are unaffected: `--rm` cleans up).
+- **Non-root container user** -- Windows has no host uid/gid to map, so the runner omits `--user` and scans run as the runner image's own non-root `runner` user instead. Docker Desktop presents Windows bind mounts as world-writable inside its Linux VM, so file passing in both directions is unaffected.
+- **Runtimes** -- Docker Desktop is the supported engine: `--runtime apple` is macOS-only, and `--runtime podman` (via `podman machine`) is untested on Windows. SELinux relabeling and rootless `--userns=keep-id` do not apply.
 - **Local directory scans** -- copying a tree that contains symlinks requires the symlink-creation privilege (enable Windows Developer Mode); without it those scans fail with a permission error.
-- **Verification** -- Windows releases ship as `.zip`; verify them against `SHA256SUMS` and the GitHub build-provenance attestation exactly like the tar archives. The executables are not code-signed, so SmartScreen may warn on first run.
 
 ## Flags
 
