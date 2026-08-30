@@ -154,7 +154,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           RUNNER_IMAGE=$(scripts/wait-for-runner-image.sh \
-            "${REPOSITORY}" "${COMMIT_SHA::7}" 900 15)
+            "${REPOSITORY}" "${COMMIT_SHA}" 900 15)
           echo "image=${RUNNER_IMAGE}" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -286,7 +286,11 @@ jobs:
   release:
     name: release
     needs: [preflight, build]
-    if: needs.preflight.outputs.release_due == 'true'
+    # Tagging and publishing stay main-only. Dispatching this workflow on a
+    # branch therefore exercises the whole build matrix -- the point of the
+    # branch dispatch -- and leaves its archives as run artifacts instead of
+    # cutting a release from a ref that is not main.
+    if: needs.preflight.outputs.release_due == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-slim
     timeout-minutes: 20
     permissions:
