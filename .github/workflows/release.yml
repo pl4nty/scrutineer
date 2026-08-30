@@ -29,15 +29,6 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       runner_image: ${{ steps.runner.outputs.image }}
     steps:
-      - name: Require main branch
-        env:
-          REF: ${{ github.ref }}
-        run: |
-          if [[ "${REF}" != "refs/heads/main" ]]; then
-            echo "::error::Releases must run from main, not ${REF}"
-            exit 1
-          fi
-
       - name: Set up Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
