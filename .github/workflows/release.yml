@@ -154,7 +154,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           RUNNER_IMAGE=$(scripts/wait-for-runner-image.sh \
-            "${REPOSITORY}" "${COMMIT_SHA}" 900 15)
+            "${REPOSITORY}" "${COMMIT_SHA::7}" 900 15)
           echo "image=${RUNNER_IMAGE}" >> "${GITHUB_OUTPUT}"
 
   build:
