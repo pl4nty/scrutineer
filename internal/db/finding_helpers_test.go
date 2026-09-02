@@ -70,6 +70,153 @@ func TestSeverityAtLeast(t *testing.T) {
 	}
 }
 
+func TestReconcileFindingSeverityCap(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		severity    string
+		maximum     string
+		want        string
+		wantHistory int64
+	}{
+		{name: "critical is capped", severity: "Critical", maximum: "Medium", want: "Medium", wantHistory: 1},
+		{name: "equal severity is unchanged", severity: "Medium", maximum: "Medium", want: "Medium"},
+		{name: "lower severity is never raised", severity: "Low", maximum: "Medium", want: "Low"},
+		{name: "unknown severity is unchanged", severity: "UNKNOWN", maximum: "Medium", want: "UNKNOWN"},
+		{name: "empty cap only reads", severity: "High", want: "High"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			finding := seedFinding(t, gdb)
+			if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity", tc.severity).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := ReconcileFindingSeverityCap(gdb, finding.ID, tc.maximum, SourceSystem, "verify")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("effective severity = %q, want %q", got, tc.want)
+			}
+			var refreshed Finding
+			if err := gdb.First(&refreshed, finding.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if refreshed.Severity != tc.want {
+				t.Fatalf("stored severity = %q, want %q", refreshed.Severity, tc.want)
+			}
+			var historyCount int64
+			if err := gdb.Model(&FindingHistory{}).Where("finding_id = ? AND field = ?", finding.ID, severityField).Count(&historyCount).Error; err != nil {
+				t.Fatal(err)
+			}
+			if historyCount != tc.wantHistory {
+				t.Fatalf("history rows = %d, want %d", historyCount, tc.wantHistory)
+			}
+		})
+	}
+}
+
+func TestReconcileFindingSeverityCapRestoresLatestOwnedWrite(t *testing.T) {
+	gdb := newTestDB(t)
+	finding := seedFinding(t, gdb)
+	if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity", "Critical").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileFindingSeverityCap(gdb, finding.ID, "Medium", SourceSystem, "verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity_caps", "authorization held").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReconcileFindingSeverityCap(gdb, finding.ID, "", SourceSystem, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Critical" {
+		t.Fatalf("effective severity = %q, want Critical", got)
+	}
+	var history []FindingHistory
+	if err := gdb.Where("finding_id = ? AND field = ?", finding.ID, severityField).Order("id").Find(&history).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[1].OldValue != "Medium" || history[1].NewValue != "Critical" {
+		t.Fatalf("severity history = %+v", history)
+	}
+}
+
+func TestReconcileFindingSeverityCapRelaxesAcrossOwnedHistory(t *testing.T) {
+	gdb := newTestDB(t)
+	finding := seedFinding(t, gdb)
+	if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity", "Critical").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		maximum string
+		reason  string
+		want    string
+	}{
+		{maximum: "Low", reason: "host shell", want: "Low"},
+		{maximum: "Medium", reason: "local only", want: "Medium"},
+		{maximum: "High", reason: "user interaction", want: "High"},
+		{maximum: "", reason: "", want: "Critical"},
+	}
+	for _, step := range steps {
+		got, err := ReconcileFindingSeverityCap(gdb, finding.ID, step.maximum, SourceSystem, "verify")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != step.want {
+			t.Fatalf("cap %q produced %q, want %q", step.maximum, got, step.want)
+		}
+		if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity_caps", step.reason).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var history []FindingHistory
+	if err := gdb.Where("finding_id = ? AND field = ?", finding.ID, severityField).Order("id").Find(&history).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 4 || history[0].OldValue != "Critical" || history[3].NewValue != "Critical" {
+		t.Fatalf("severity history = %+v", history)
+	}
+}
+
+func TestReconcileFindingSeverityCapPreservesLaterSeverityWrite(t *testing.T) {
+	gdb := newTestDB(t)
+	finding := seedFinding(t, gdb)
+	if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity", "Critical").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileFindingSeverityCap(gdb, finding.ID, "Medium", SourceSystem, "verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Model(&Finding{}).Where("id = ?", finding.ID).Update("severity_caps", "authorization held").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFindingField(gdb, finding.ID, severityField, "Low", SourceAnalyst, "reviewer"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReconcileFindingSeverityCap(gdb, finding.ID, "", SourceSystem, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Low" {
+		t.Fatalf("effective severity = %q, want Low", got)
+	}
+}
+
+func TestReconcileFindingSeverityCapRejectsInvalidMaximum(t *testing.T) {
+	gdb := newTestDB(t)
+	finding := seedFinding(t, gdb)
+	if _, err := ReconcileFindingSeverityCap(gdb, finding.ID, "UNKNOWN", SourceSystem, "verify"); err == nil {
+		t.Fatal("expected invalid severity cap to fail")
+	}
+}
+
 func TestValidDependentCampaignStatus(t *testing.T) {
 	for _, status := range append([]DependentCampaignStatus{""}, DependentCampaignStatuses...) {
 		if !ValidDependentCampaignStatus(status) {
@@ -330,6 +477,26 @@ func TestWriteFindingField_rejectsUnknownField(t *testing.T) {
 	f := seedFinding(t, gdb)
 	if err := WriteFindingField(gdb, f.ID, "does_not_exist", "x", SourceAnalyst, ""); err == nil {
 		t.Error("expected error for unknown field")
+	}
+}
+
+func TestWriteFindingField_rejectsUnknownStatus(t *testing.T) {
+	gdb := newTestDB(t)
+	f := seedFinding(t, gdb)
+	for _, bad := range []string{"Rejected", "closed", "REPORTED"} {
+		if err := WriteFindingField(gdb, f.ID, "status", bad, SourceAnalyst, ""); err == nil {
+			t.Errorf("status %q: expected error", bad)
+		}
+	}
+	var got Finding
+	gdb.First(&got, f.ID)
+	if got.Status != FindingNew {
+		t.Errorf("status = %q, want unchanged", got.Status)
+	}
+	for _, ok := range FindingLifecycles {
+		if err := WriteFindingField(gdb, f.ID, "status", string(ok), SourceAnalyst, ""); err != nil {
+			t.Errorf("status %q: %v", ok, err)
+		}
 	}
 }
 
@@ -628,7 +795,7 @@ var editableFindingFields = []string{
 	"title", "severity", "status", "cwe", "location", "affected",
 	"reachability", "quality_tier", "cve_id", "ghsa_id",
 	"cvss_vector", "cvss_v4_vector", "fix_version", "fix_commit",
-	"resolution", "disclosure_draft", "assignee",
+	"resolution", "disclosure_draft", "disclosure_title", "assignee",
 	"suggested_fix", "suggested_fix_commit",
 	"breaking_change", "breaking_change_rationale",
 	"exploited_in_wild", "exploited_in_wild_evidence",
@@ -642,6 +809,8 @@ func fieldTestValue(field string) string {
 	switch field {
 	case "ghsa_id":
 		return "GHSA-aaaa-bbbb-cccc"
+	case "status":
+		return string(FindingTriaged)
 	case "cvss_vector":
 		return "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
 	case "cvss_v4_vector":

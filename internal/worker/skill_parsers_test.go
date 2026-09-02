@@ -857,6 +857,13 @@ func verificationReport(t *testing.T, status string, edit func(*verification.Rep
 			},
 			Blockers: []string{},
 		},
+		SeverityPrerequisites: &verification.SeverityPrerequisites{
+			AttackerPosition:   verification.PrerequisiteValue{Value: "remote_unauthenticated", Evidence: "public API accepts remote input"},
+			UserInteraction:    verification.PrerequisiteValue{Value: "none", Evidence: "request processing needs no victim action"},
+			OutcomeDeterminism: verification.PrerequisiteValue{Value: "deterministic", Evidence: "3/3 attempts reach the same sink"},
+			Impact:             verification.PrerequisiteValue{Value: "code_execution_or_equivalent", Evidence: "attempts execute attacker-controlled code"},
+			ExistingCapability: verification.PrerequisiteValue{Value: "none", Evidence: "attacker starts without host access"},
+		},
 		Attempts: []verification.Attempt{
 			{Number: 1, Outcome: "reproduced", Evidence: "boom", FailureClass: "panic", CrashSite: "parser.go:42"},
 			{Number: 2, Outcome: "reproduced", Evidence: "boom", FailureClass: "panic", CrashSite: "parser.go:42"},
@@ -917,6 +924,16 @@ func verificationReport(t *testing.T, status string, edit func(*verification.Rep
 				MatchedControls: []string{},
 				Assessments:     []verification.ControlAssessment{},
 			},
+		}
+		for _, prerequisite := range []*verification.PrerequisiteValue{
+			&report.SeverityPrerequisites.AttackerPosition,
+			&report.SeverityPrerequisites.UserInteraction,
+			&report.SeverityPrerequisites.OutcomeDeterminism,
+			&report.SeverityPrerequisites.Impact,
+			&report.SeverityPrerequisites.ExistingCapability,
+		} {
+			prerequisite.Value = "not_attempted"
+			prerequisite.Evidence = "setup failed before evaluation"
 		}
 	}
 	if edit != nil {
@@ -1185,6 +1202,33 @@ func TestParseVerify_storesLiveReportWithoutControlBypassUngraded(t *testing.T) 
 	notes := findingNotes(gdb, f.ID)
 	if len(notes) != 1 || !strings.Contains(notes[0].Body, "verify report requires criteria.control_bypass") {
 		t.Fatalf("notes = %+v, want missing control-bypass validation reason", notes)
+	}
+}
+
+func TestParseVerify_storesLiveReportWithoutSeverityPrerequisitesUngraded(t *testing.T) {
+	var report verification.Report
+	if err := json.Unmarshal([]byte(confirmedVerificationReport(t)), &report); err != nil {
+		t.Fatal(err)
+	}
+	report.SeverityPrerequisites = nil
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, gdb := runSkillWithFinding(t, "verify", string(raw), db.FindingNew)
+	if f.Status != db.FindingNew {
+		t.Fatalf("status = %s, want new: an ungraded report must not change lifecycle", f.Status)
+	}
+	var row db.FindingVerification
+	if err := gdb.Where("finding_id = ?", f.ID).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != "confirmed" || row.Score != nil || row.Report != string(raw) {
+		t.Fatalf("ungraded verification = %+v", row)
+	}
+	notes := findingNotes(gdb, f.ID)
+	if len(notes) != 1 || !strings.Contains(notes[0].Body, "verify report requires severity_prerequisites") {
+		t.Fatalf("notes = %+v, want missing prerequisite validation reason", notes)
 	}
 }
 
@@ -1950,6 +1994,19 @@ func TestParseDisclose_postsSummaryNote(t *testing.T) {
 		"notes": "Source-only advisory; no published packages."
 	}`
 	f, gdb := runSkillWithFinding(t, "disclose", report, db.FindingTriaged)
+
+	var stored db.Finding
+	gdb.First(&stored, f.ID)
+	if stored.DisclosureTitle != "Command injection in run()" {
+		t.Errorf("DisclosureTitle = %q, want the ghsa.summary", stored.DisclosureTitle)
+	}
+	var hist db.FindingHistory
+	if err := gdb.Where("finding_id = ? AND field = ?", f.ID, "disclosure_title").First(&hist).Error; err != nil {
+		t.Fatalf("missing disclosure_title history: %v", err)
+	}
+	if hist.Source != db.SourceModel || hist.By != "disclose" {
+		t.Errorf("disclosure_title history source/by = %q/%q, want model/disclose", hist.Source, hist.By)
+	}
 
 	var notes []db.FindingNote
 	gdb.Where(map[string]any{"finding_id": f.ID, "by": "disclose"}).Find(&notes)
@@ -2726,5 +2783,105 @@ func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A failed maintainer lookup must skip the record, not fall through into the
+// Save below. FirstOrCreate leaves the destination zero on a query error, so
+// saving it inserts a second maintainer row with an empty login and hands the
+// repository's association to that row instead of the real one.
+func TestParseMaintainers_lookupFailureSkipsRecord(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://github.com/rails/rails", Name: "rails"}
+	gdb.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID}
+	gdb.Create(&scan)
+
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	seed := `{"maintainers":[{"login":"alice","name":"Real Alice","role":"lead","status":"active"}]}`
+	if err := w.parseMaintainersOutput(&scan, seed, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fail only the first lookup, the way a timeout or a dropped connection
+	// would: the writes that follow still succeed. A two-maintainer report
+	// exercises the Replace path — with a one-maintainer report the sole
+	// failure leaves linked empty and Replace is never reached.
+	fired := false
+	const name = "test:fail_maintainer_lookup"
+	if err := gdb.Callback().Query().Before("gorm:query").Register(name, func(d *gorm.DB) {
+		if d.Statement.Table == "maintainers" && !fired {
+			fired = true
+			_ = d.AddError(errors.New("injected lookup failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report := `{"maintainers":[{"login":"alice","status":"active"},{"login":"bob","status":"active"}]}`
+	if err := w.parseMaintainersOutput(&scan, report, func(Event) {}); err != nil {
+		t.Fatalf("a per-maintainer failure must not fail the whole report: %v", err)
+	}
+	if err := gdb.Callback().Query().Remove(name); err != nil {
+		t.Fatal(err)
+	}
+
+	var blank int64
+	gdb.Model(&db.Maintainer{}).Where("login = ?", "").Count(&blank)
+	if blank != 0 {
+		t.Errorf("failed lookup inserted %d blank-login maintainer row(s), want 0", blank)
+	}
+	var linked []db.Maintainer
+	if err := gdb.Model(&repo).Association("Maintainers").Find(&linked); err != nil {
+		t.Fatal(err)
+	}
+	// alice's lookup failed and bob's succeeded, so linked=[bob]. Replacing
+	// with a partial set would unlink alice; the guard skips Replace instead
+	// and leaves the seeded association untouched.
+	if len(linked) != 1 || linked[0].Login != "alice" {
+		t.Errorf("repository maintainers = %+v, want alice still linked (Replace skipped on partial set)", linked)
+	}
+}
+
+// The opposite case, and the reason the failed Save is NOT skipped: the row
+// exists and is correctly identified, only its field refresh was lost. Dropping
+// it from linked would unlink a real maintainer through the wholesale
+// Association.Replace, which loses more than a stale name does.
+func TestParseMaintainers_saveFailureKeepsMaintainerLinked(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://github.com/rails/rails", Name: "rails"}
+	gdb.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID}
+	gdb.Create(&scan)
+	gdb.Create(&db.Maintainer{Login: "alice", Name: "Real Alice"})
+
+	const name = "test:fail_maintainer_save"
+	if err := gdb.Callback().Update().Before("gorm:update").Register(name, func(d *gorm.DB) {
+		if d.Statement.Table == "maintainers" {
+			_ = d.AddError(errors.New("injected save failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	report := `{"maintainers":[{"login":"alice","name":"Updated Alice","role":"lead","status":"active"}]}`
+	if err := w.parseMaintainersOutput(&scan, report, func(Event) {}); err != nil {
+		t.Fatalf("a failed save must not fail the whole report: %v", err)
+	}
+	if err := gdb.Callback().Update().Remove(name); err != nil {
+		t.Fatal(err)
+	}
+
+	var linked []db.Maintainer
+	if err := gdb.Model(&repo).Association("Maintainers").Find(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if len(linked) != 1 || linked[0].Login != "alice" {
+		t.Errorf("repository maintainers = %+v, want alice linked despite the failed save", linked)
 	}
 }

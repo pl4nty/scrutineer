@@ -30,6 +30,7 @@ These live in `skills/` and are embedded in the Scrutineer executable. At startu
 | `audit-memory` | Focused static audit for reachable memory corruption in first-party C, C++, unsafe Rust, native extensions, and FFI boundaries. Requires complete primitive-hit accounting and keeps library, CLI, parser, and foreign-runtime boundaries separate; runs on demand. |
 | `cna-match` | Matches the repository to its CVE Numbering Authority so disclosures route to the right contact. |
 | `semgrep` | Runs semgrep with the `p/security-audit` and `p/secrets` rulesets and maps hits into the findings shape. |
+| `bandit` | Runs bandit over the repository's Python and maps its hits into the findings shape, grouped per test id and carrying bandit's confidence level, CWE, and rule documentation link. Gated on Python being one of the detected languages. |
 | `vuln-scan` | High-recall model-backed static source-code candidate scan adapted from Anthropic's defending-code reference harness. |
 | `zizmor` | Audits GitHub Actions workflows and enriches tool hits with bundled guidance for expression injection, privileged PR contexts, indirect workflows, credentials, runners, and supply-chain trust. |
 | `ingest` | Normalizes an externally-produced security report in an arbitrary format into findings. Runs when `/v1/import` cannot recognise the payload; the raw report is staged at `import/report`. |
@@ -41,7 +42,7 @@ These live in `skills/` and are embedded in the Scrutineer executable. At startu
 | `finding-dedup` | Compares open findings in one repository and marks findings that describe the same underlying vulnerability as duplicates. |
 | `reachability` | Traces sinks already found in this app's dependencies through the app's own code to see which are reachable from its trust boundaries. |
 | `exposure` | For one (finding, dependent) pair, decides whether the dependent's published code actually reaches the upstream library finding. Emits one CSAF 2.0 product_status verdict so scrutineer can record affected vs not_affected and stamp the right VEX justification. |
-| `verify` | Re-checks one finding against current HEAD, records an evidenced attack tree, runs three isolated attempts, scores five fixed evidence criteria, and records a non-scored bypass assessment for every host-matched design control. |
+| `verify` | Re-checks one finding against current HEAD, records an evidenced attack tree and typed attacker prerequisites, runs three isolated attempts, scores five fixed evidence criteria, and records a non-scored bypass assessment for every host-matched design control. Deterministic rules cap severity from reconciled controls, required attacker access, user interaction, outcome determinism, impact and pre-existing capability; unknown inputs mark calibration incomplete without lowering severity. |
 | `verify-windows` | The same verification, re-hosted onto the artifact the project actually ships on Windows: it resolves the release that carries the vulnerable code, downloads it from the publisher's own endpoint, proves its identity, extracts or installs it, and drives the attacker input through the shipped interface. Falls back to the project's own MSBuild/CMake build when no release qualifies, and never accepts a script that re-implements the target's logic as evidence. Shares `verify`'s output kind, rubric and lifecycle effects, and adds an `artifact` block recording what was executed and where it came from. Optional: the finding page offers it only when the skill is enabled and scrutineer is running skills directly on a Windows host (`--no-container`); elsewhere the action is hidden and the skill reports `not_attempted` if enqueued through the API. See [Windows artifact validation](windows-artifact-validation.md). |
 | `critic` | Assesses whether a true-positive finding can affect a real release build. Stores an append-only attack-path record with release viability, attacker position, preconditions, impact, likelihood, counterevidence, and facts that would change the result. |
 | `revalidate` | Cheap, read-only classifier. Reads a finding's prose plus `git log` over its location and emits `true_positive`/`false_positive`/`already_fixed`/`uncertain`, with an optional adjusted severity. Auto-enqueued for High/Critical findings from `security-deep-dive` and for every imported finding so the human queue is pre-sorted. Every `true_positive` chains automatically to `critic`; High/Critical true positives also chain to `verify`. |
@@ -150,7 +151,7 @@ Declaring `scrutineer.paths` replaces this skip list entirely: the skill sees on
 | `maintainers` | Maintainer rows. |
 | `subprojects` | Subproject rows for monorepo scoping. |
 | `posture` | Posture tier and check results on the Repository row. |
-| `verify` | Verification result and miss-count update on one Finding. |
+| `verify` | Verification result and miss-count update on one Finding. Reconciled controls and evidence-backed attacker prerequisites apply deterministic Low, Medium or High severity caps; unknown inputs only mark calibration incomplete. |
 | `critic` | Append-only attack-path assessment on one Finding. The latest `production_viability` is cached on the finding for filtering and external-reporting gates; moved or missing source must be `CONDITIONAL_VIABLE`. |
 | `revalidate` | Cheap classifier verdict (`true_positive`/`false_positive`/`already_fixed`/`uncertain`) appended as a Note on one Finding. `true_positive` transitions a `new` finding to `enriched`; an optional `adjusted_severity` overwrites the finding's severity with the change recorded in FindingHistory. |
 | `breaking_change` | `breaking_change` verdict and `breaking_change_rationale` prose on one Finding, with the verdict change recorded in FindingHistory. |
@@ -246,9 +247,9 @@ Bundled skills with typed output kinds carry a schema; skills with `output_kind:
 
 ## Calling scrutineer from a skill
 
-`context.json` carries `scrutineer.api_base` and a per-scan bearer `scrutineer.token`. With those a skill can read prior scan results for the same repository, enqueue further scans, fetch maintainers, packages, advisories, dependents, and findings, and write notes and field updates back to a finding. The full surface is documented in [openapi.yaml](../openapi.yaml) at the repository root. The `triage` skill is the reference example for enqueueing; `disclose` and `patch` are the reference examples for finding writes.
+`context.json` carries `scrutineer.api_base` and a per-scan bearer `scrutineer.token`. With those a skill can read prior scan results for the same repository, enqueue further scans, fetch maintainers, packages, advisories, dependents, and findings, and write notes back to findings. A finding-scoped skill can also update mutable fields on the finding named by `finding_id`. The full surface is documented in [openapi.yaml](../openapi.yaml) at the repository root. The `triage` skill is the reference example for enqueueing; `disclose` and `patch` are the reference examples for finding writes.
 
-The token is scoped to the scan's own repository: a skill cannot read or write rows belonging to other repositories.
+The token is scoped to the scan's own repository: a skill cannot read or write rows belonging to other repositories. Direct field updates are narrower and require the scan's `finding_id` to match the target finding. Notes, communications, references, and labels retain repository scope so repository-wide skills can manage associated context across findings.
 
 ## Loading skills
 

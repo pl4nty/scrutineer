@@ -948,10 +948,12 @@ func (w *Worker) parseVerifyOutput(scan *db.Scan, report string, emit func(Event
 	if err := w.DB.First(&f, *scan.FindingID).Error; err != nil {
 		return fmt.Errorf("load finding %d: %w", *scan.FindingID, err)
 	}
+	calibration := findingSeverityCalibration{}
 	if rubric != nil {
+		var controls *skillContextControls
 		var expectedControlIDs []string
 		var unavailableReason string
-		if controls := resolveFindingControls(scan.Repository.ThreatModel, f); controls != nil {
+		if controls = resolveFindingControls(scan.Repository.ThreatModel, f); controls != nil {
 			expectedControlIDs = controls.IDs
 			unavailableReason = controls.UnavailableWhy
 		}
@@ -959,14 +961,23 @@ func (w *Worker) parseVerifyOutput(scan *db.Scan, report string, emit func(Event
 			gradingError = err.Error()
 			rubric = nil
 			score = nil
+		} else {
+			calibration = calibrateFindingSeverity(controls, rubric.Criteria.ControlBypass, rubric.SeverityPrerequisites)
 		}
 	}
 	nextStatus, err := verifyNextStatus(f, scan, result, gradingError)
 	if err != nil {
 		return err
 	}
-	note := verifyNote(result, rubric, score, gradingError)
-	if err := w.recordVerifyOutput(scan, f, result.Status, report, note, score, nextStatus); err != nil {
+	if err := w.recordVerifyOutput(scan, f, verifyRecord{
+		result:       result,
+		report:       report,
+		rubric:       rubric,
+		score:        score,
+		gradingError: gradingError,
+		nextStatus:   nextStatus,
+		calibration:  calibration,
+	}); err != nil {
 		return err
 	}
 
@@ -1079,6 +1090,9 @@ func decodeVerifyOutput(report string) (verifyOutput, *verification.Report, *flo
 	if err != nil {
 		return result, nil, nil, err.Error(), nil
 	}
+	if rubric.SeverityPrerequisites == nil {
+		return result, nil, nil, "verify report requires severity_prerequisites", nil
+	}
 	score := rubric.Score()
 	return result, &rubric, &score, "", nil
 }
@@ -1119,7 +1133,13 @@ func verifyStatusValid(status string) bool {
 	}
 }
 
-func verifyNote(result verifyOutput, rubric *verification.Report, score *float64, gradingError string) string {
+func verifyNote(
+	result verifyOutput,
+	rubric *verification.Report,
+	score *float64,
+	gradingError string,
+	calibration findingSeverityCalibration,
+) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "verify: %s\n", result.Status)
 	if gradingError != "" {
@@ -1133,6 +1153,7 @@ func verifyNote(result verifyOutput, rubric *verification.Report, score *float64
 				fmt.Fprintf(&b, "attack blocker: %s\n", blocker)
 			}
 		}
+		writeSeverityPrerequisites(&b, rubric.SeverityPrerequisites)
 		for _, named := range rubric.Criteria.List() {
 			fmt.Fprintf(&b, "criterion: %s = %s\n", named.Name, named.Criterion.Verdict)
 		}
@@ -1145,6 +1166,12 @@ func verifyNote(result verifyOutput, rubric *verification.Report, score *float64
 			for _, assessment := range gate.Assessments {
 				fmt.Fprintf(&b, "control: %s = %s: %s\n", assessment.ControlID, assessment.Disposition, assessment.Evidence)
 			}
+		}
+		for _, capReason := range calibration.Caps {
+			fmt.Fprintf(&b, "severity cap: %s\n", capReason)
+		}
+		if calibration.Incomplete {
+			b.WriteString("severity calibration: incomplete\n")
 		}
 	}
 	if result.Preflight.Classification != "" {
@@ -1165,13 +1192,27 @@ func verifyNote(result verifyOutput, rubric *verification.Report, score *float64
 	return b.String()
 }
 
-func (w *Worker) recordVerifyOutput(
-	scan *db.Scan,
-	f db.Finding,
-	status, report, note string,
-	score *float64,
-	nextStatus db.FindingLifecycle,
-) error {
+func writeSeverityPrerequisites(b *strings.Builder, prerequisites *verification.SeverityPrerequisites) {
+	if prerequisites == nil {
+		return
+	}
+	for _, prerequisite := range prerequisites.List() {
+		fmt.Fprintf(b, "severity prerequisite: %s = %s: %s\n", prerequisite.Name,
+			prerequisite.Assessment.Value, prerequisite.Assessment.Evidence)
+	}
+}
+
+type verifyRecord struct {
+	result       verifyOutput
+	report       string
+	rubric       *verification.Report
+	score        *float64
+	gradingError string
+	nextStatus   db.FindingLifecycle
+	calibration  findingSeverityCalibration
+}
+
+func (w *Worker) recordVerifyOutput(scan *db.Scan, f db.Finding, record verifyRecord) error {
 	return w.DB.Transaction(func(tx *gorm.DB) error {
 		var existing db.FindingVerification
 		lookup := tx.Where("finding_id = ? AND scan_id = ?", f.ID, scan.ID).Limit(1).Find(&existing)
@@ -1181,21 +1222,42 @@ func (w *Worker) recordVerifyOutput(
 		if lookup.RowsAffected > 0 {
 			return nil
 		}
-		if nextStatus != "" {
-			if err := db.WriteFindingField(tx, f.ID, "status", string(nextStatus), db.SourceModel, "verify"); err != nil {
+		if record.nextStatus != "" {
+			if err := db.WriteFindingField(tx, f.ID, "status", string(record.nextStatus), db.SourceModel, "verify"); err != nil {
 				return fmt.Errorf("update status: %w", err)
+			}
+		}
+		if record.calibration.Evaluated {
+			effectiveSeverity, err := db.ReconcileFindingSeverityCap(
+				tx, f.ID, record.calibration.Maximum, db.SourceSystem, verifySkillName,
+			)
+			if err != nil {
+				return fmt.Errorf("reconcile severity cap: %w", err)
+			}
+			if !db.SeverityAtLeast(effectiveSeverity, "Low") {
+				record.calibration.Incomplete = true
+				record.calibration.Caps = nil
+			} else if record.calibration.Maximum != "" && !db.SeverityAtLeast(effectiveSeverity, record.calibration.Maximum) {
+				record.calibration.Caps = nil
+			}
+			if err := tx.Model(&db.Finding{}).Where("id = ?", f.ID).Updates(map[string]any{
+				"severity_caps":                   strings.Join(record.calibration.Caps, "\n"),
+				"severity_calibration_incomplete": record.calibration.Incomplete,
+			}).Error; err != nil {
+				return fmt.Errorf("record severity calibration: %w", err)
 			}
 		}
 		row := db.FindingVerification{
 			FindingID: f.ID,
 			ScanID:    scan.ID,
-			Status:    status,
-			Score:     score,
-			Report:    report,
+			Status:    record.result.Status,
+			Score:     record.score,
+			Report:    record.report,
 		}
 		if err := tx.Create(&row).Error; err != nil {
 			return fmt.Errorf("record verification: %w", err)
 		}
+		note := verifyNote(record.result, record.rubric, record.score, record.gradingError, record.calibration)
 		if _, err := db.AddFindingNote(tx, f.ID, note, "verify"); err != nil {
 			return fmt.Errorf("record verify note: %w", err)
 		}
@@ -1310,14 +1372,18 @@ func (w *Worker) parseMitigationOutput(scan *db.Scan, report string, emit func(E
 	return nil
 }
 
-// parseDiscloseOutput posts a FindingNote summarising a disclose run so the
-// finding's Notes panel records that a draft was prepared, alongside the
-// verify/revalidate/patch entries (#482). The draft itself is on
-// Finding.DisclosureDraft (PATCHed by the skill via the API); this note is
-// the audit trail pointing at it: the GHSA summary, which fields were
-// patched/preserved, the suggested recipients, references added, and
-// the report's notes prose. An error-only report records why the skill
-// refused to draft.
+// parseDiscloseOutput records the drafted GHSA summary on
+// Finding.DisclosureTitle and posts a FindingNote summarising the run so
+// the finding's Notes panel records that a draft was prepared, alongside
+// the verify/revalidate/patch entries (#482). DisclosureTitle is distinct
+// from Finding.Title: the skill's own PATCH only touches Title when it
+// was empty, so a re-run against a finding with an existing title would
+// otherwise lose the freshly drafted summary entirely. The disclosure
+// draft body itself is on Finding.DisclosureDraft (PATCHed by the skill
+// via the API); this note is the audit trail pointing at it: the GHSA
+// summary, which fields were patched/preserved, the suggested
+// recipients, references added, and the report's notes prose. An
+// error-only report records why the skill refused to draft.
 func (w *Worker) parseDiscloseOutput(scan *db.Scan, report string, emit func(Event)) error {
 	if scan.FindingID == nil {
 		return fmt.Errorf("disclose scan has no finding_id")
@@ -1342,6 +1408,11 @@ func (w *Worker) parseDiscloseOutput(scan *db.Scan, report string, emit func(Eve
 	if result.Error != "" {
 		fmt.Fprintf(&b, "disclose: refused\n\n%s\n", strings.TrimSpace(result.Error))
 	} else {
+		if summary := strings.TrimSpace(result.GHSA.Summary); summary != "" {
+			if err := db.WriteFindingField(w.DB, *scan.FindingID, "disclosure_title", summary, db.SourceModel, "disclose"); err != nil {
+				return fmt.Errorf("update disclosure_title: %w", err)
+			}
+		}
 		b.WriteString("disclose: drafted")
 		if result.GHSA.Summary != "" {
 			fmt.Fprintf(&b, " %q", result.GHSA.Summary)

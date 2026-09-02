@@ -504,10 +504,11 @@ paths:
       summary: Update mutable fields on a finding
       operationId: patchFinding
       description: |
+        The authenticated scan must be finding-scoped to this finding ID.
         Each field value is written through the history-tracked path.
-        Skills write with source=model_suggested; the browser UI (behind
-        its own session) writes with source=analyst. Unknown field names
-        are rejected.
+        Finding-scoped skills write with source=model_suggested; browser
+        form edits use separate routes and write with source=analyst.
+        Unknown field names are rejected.
       requestBody:
         required: true
         content:
@@ -526,7 +527,7 @@ paths:
                     Map of field name to new value. Allowed fields:
                     title, severity, status, cwe, location, affected, reachability, quality_tier,
                     cve_id, ghsa_id, cvss_vector, cvss_v4_vector, fix_version, fix_commit,
-                    resolution, disclosure_draft, suggested_recipients, assignee,
+                    resolution, disclosure_draft, disclosure_title, suggested_recipients, assignee,
                     suggested_fix, suggested_fix_commit, breaking_change, breaking_change_rationale,
                     exploited_in_wild, exploited_in_wild_evidence, mitigation, mitigation_semgrep,
                     release_tag, release_url, last_revalidate_verdict.
@@ -1584,6 +1585,8 @@ components:
         sinks:         { type: string, description: Comma-joined sink ids. }
         title:         { type: string }
         severity:      { type: string, enum: [Critical, High, Medium, Low] }
+        severity_caps: { type: array, items: { type: string }, description: "Deterministic reasons that currently cap severity, derived from the latest reconciled verification controls and typed attacker prerequisites." }
+        severity_calibration_incomplete: { type: boolean, description: "True when an unknown severity, unknown or unattempted prerequisite, unavailable control resolution, or unresolved control assessment prevented complete calibration; unknown inputs never lower severity." }
         status:        { type: string }
         cwe:           { type: string }
         location:      { type: string }
@@ -1624,6 +1627,7 @@ components:
             reach:            { type: string }
             rating:           { type: string }
             disclosure_draft: { type: string }
+            disclosure_title: { type: string, description: "The disclose skill's drafted GHSA summary; may differ from the finding's own title." }
             suggested_recipients: { type: string, description: "File-level owners for the finding's location, from CODEOWNERS or recent non-bot committers." }
             sub_path:         { type: string, description: "Monorepo sub-folder the producing scan was scoped to. The finding's location is relative to it; empty means the repo root." }
             verification:
@@ -1716,7 +1720,7 @@ components:
 
     VerificationReport:
       type: object
-      description: "Immutable verify output containing an evidenced attack tree, three attempt records, five scored criteria, and a non-scored host-validated control-bypass gate. Historical reports may omit attack_tree or criteria.control_bypass. See skills/verify/schema.json for the current output contract."
+      description: "Immutable verify output containing an evidenced attack tree, typed attacker prerequisites, three attempt records, five scored criteria, and a non-scored host-validated control-bypass gate. Historical reports may omit attack_tree, severity_prerequisites, or criteria.control_bypass. See skills/verify/schema.json for the current output contract."
       required: [status]
       additionalProperties: true
       properties:
@@ -1735,6 +1739,42 @@ components:
             blockers:
               type: array
               items: { type: string }
+        severity_prerequisites:
+          type: object
+          description: "Evidence-backed inputs for deterministic severity caps. Required by the current verify contract; optional here only for historical stored reports. Unknown inputs mark calibration incomplete and never lower severity."
+          required: [attacker_position, user_interaction, outcome_determinism, impact, existing_capability]
+          additionalProperties: false
+          properties:
+            attacker_position:
+              type: object
+              required: [value, evidence]
+              properties:
+                value: { type: string, enum: [remote_unauthenticated, remote_authenticated, internal_authenticated, local, host_shell, long_term_physical, unknown, not_attempted] }
+                evidence: { type: string }
+            user_interaction:
+              type: object
+              required: [value, evidence]
+              properties:
+                value: { type: string, enum: [none, required, unknown, not_attempted] }
+                evidence: { type: string }
+            outcome_determinism:
+              type: object
+              required: [value, evidence]
+              properties:
+                value: { type: string, enum: [deterministic, probabilistic_llm, unknown, not_attempted] }
+                evidence: { type: string }
+            impact:
+              type: object
+              required: [value, evidence]
+              properties:
+                value: { type: string, enum: [code_execution_or_equivalent, privilege_escalation, sensitive_data_access, availability, other, unknown, not_attempted] }
+                evidence: { type: string }
+            existing_capability:
+              type: object
+              required: [value, evidence]
+              properties:
+                value: { type: string, enum: [none, less_than_outcome, support_channel_equivalent, equivalent_or_greater, unknown, not_attempted] }
+                evidence: { type: string }
         attempts:
           type: array
           minItems: 3
@@ -1839,6 +1879,7 @@ components:
               breaking_change_rationale:  { type: string }
               dup_check:                  { type: string }
               disclosure_draft:           { type: string }
+              disclosure_title:           { type: string, description: "The disclose skill's drafted GHSA summary; may differ from the finding's own title." }
               suggested_recipients:       { type: string, description: "File-level owners for the finding's location, from CODEOWNERS or recent non-bot committers." }
               exploited_in_wild:          { type: string, enum: [yes, no] }
               exploited_in_wild_evidence: { type: string }

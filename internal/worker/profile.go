@@ -137,6 +137,20 @@ var builtinProfiles = []Profile{
 	},
 	{Name: "python", Detect: pm("pip", "Pipenv", "Poetry", "uv", "PDM", "setuptools")},
 	{Name: "go", Detect: pm("Go Modules")},
+	{
+		// Before java: an sbt project also matches nothing under java (Maven/
+		// Gradle), but a Scala-on-Gradle build reports both Gradle and Scala,
+		// and the scala profile is a superset of java (BaseProfile) that adds
+		// sbt plus Scala-specific reproducer guidance. The language selector is
+		// a belt-and-braces for a *.scala-only checkout with no build.sbt.
+		Name:            "scala",
+		BaseProfile:     "java",
+		FallbackProfile: "java",
+		Detect: []BriefMatch{
+			{briefPackageManager, []string{"sbt"}},
+			{briefLanguage, []string{"Scala"}},
+		},
+	},
 	{Name: "java", Detect: pm("Maven", "Gradle")},
 	{Name: "dotnet", Detect: pm("NuGet", "dotnet CLI")},
 	{Name: "beam", Detect: pm("Mix", "rebar3")},
@@ -313,7 +327,7 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 	if err != nil {
 		return Profile{}
 	}
-	args := rt.runArgs("--rm",
+	args := runtimeRunArgs(rt, "--rm",
 		"--network", "none",
 	)
 	args = append(args, containerUserArgs()...)
@@ -322,7 +336,7 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 		"--entrypoint", "brief",
 		runnerImage, "/src",
 	)
-	cmd := exec.CommandContext(ctx, rt.bin(), args...)
+	cmd := exec.CommandContext(ctx, runtimeBin(rt), args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// A brief failure degrades to the default runner image; the scan
@@ -485,16 +499,16 @@ func (p Profile) EnsureImage(ctx context.Context, rt ContainerRuntime, profilesD
 		if p.BaseProfile == "" && baseDigest == "" {
 			emit(Event{Kind: KindText, Text: "profile: reusing cached " + tag +
 				" but could not verify the runner base is current (" + runnerImage +
-				" digest unresolved); if it changed, `" + rt.bin() + " rmi " + tag + "` to force a rebuild"})
+				" digest unresolved); if it changed, `" + runtimeBin(rt) + " rmi " + tag + "` to force a rebuild"})
 		}
 		return tag, nil
 	}
 	emit(Event{Kind: KindText, Text: "profile: building " + tag + " (first build can take several minutes)"})
 	start := time.Now()
 	args := profileBuildArgs(p, tag, dockerfile, filepath.Join(profilesDir, p.Name), baseImage, baseDigest)
-	cmd := exec.CommandContext(ctx, rt.bin(), args...)
+	cmd := exec.CommandContext(ctx, runtimeBin(rt), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%s build %s: %w\n%s", rt.bin(), tag, err, out)
+		return "", fmt.Errorf("%s build %s: %w\n%s", runtimeBin(rt), tag, err, out)
 	}
 	emit(Event{Kind: KindText, Text: "profile: built " + tag + " in " + time.Since(start).Round(time.Second).String()})
 	return tag, nil
@@ -527,5 +541,5 @@ func profileBuildArgs(p Profile, tag, dockerfile, contextDir, baseImage, baseDig
 }
 
 func imageExistsLocally(ctx context.Context, rt ContainerRuntime, tag string) bool {
-	return exec.CommandContext(ctx, rt.bin(), "image", "inspect", tag).Run() == nil
+	return exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", tag).Run() == nil
 }

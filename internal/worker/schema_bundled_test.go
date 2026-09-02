@@ -66,11 +66,22 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 			    "native_signals":["language:Go","language:C"]},
 			  "triggered":["packages","advisories","security-deep-dive"],
 			  "skipped":["semgrep"],"gated":[],"already_done":["metadata"],
-			  "verify":[12,34],"errors":[]}`,
+			  "verify":[12,34],"release_watch":[55,56],"errors":[]}`,
 		},
 		{
 			"../../skills/triage/schema.json",
 			`{"error":"context.json missing scrutineer block"}`,
+		},
+		{
+			"../../skills/bandit/schema.json",
+			`{"findings":[{"id":"F1","title":"B608 hardcoded_sql_expressions",
+			  "severity":"Medium","confidence":"low","cwe":"CWE-89",
+			  "location":"app.py:9","locations":["app.py:9"],
+			  "trace":"Possible SQL injection vector through string-based query construction.",
+			  "rating":"Medium from bandit test B608",
+			  "references":[{"url":"https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+			    "summary":"bandit docs: B608","tags":"docs"}]}],
+			  "notes":"bandit could not read 1 file(s): bad.py (syntax error while parsing AST from file)"}`,
 		},
 		{
 			"../../skills/repo-overview/schema.json",
@@ -226,10 +237,11 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 		{
 			"../../skills/verify/schema.json",
 			`{"status":"confirmed","preflight":{"classification":"local-safe","justification":"local file input"},
-			  "attack_tree":{"goal":"Trigger parser panic","root_id":"AT1","verdict":"reachable","nodes":[
+				  "attack_tree":{"goal":"Trigger parser panic","root_id":"AT1","verdict":"reachable","nodes":[
 			    {"id":"AT1","parent_id":null,"kind":"goal","description":"Trigger parser panic","status":"satisfied","evidence":"attempts 1-3 panic"},
 			    {"id":"AT2","parent_id":"AT1","kind":"entry_point","description":"Call public Parse","status":"satisfied","evidence":"api.go:18"},
-			    {"id":"AT3","parent_id":"AT2","kind":"sink","description":"Reach parser sink","status":"satisfied","evidence":"parser.go:42"}],"blockers":[]},
+				    {"id":"AT3","parent_id":"AT2","kind":"sink","description":"Reach parser sink","status":"satisfied","evidence":"parser.go:42"}],"blockers":[]},
+				  "severity_prerequisites":{"attacker_position":{"value":"remote_unauthenticated","evidence":"public parser accepts remote bytes"},"user_interaction":{"value":"none","evidence":"request alone triggers parsing"},"outcome_determinism":{"value":"deterministic","evidence":"3/3 attempts panic"},"impact":{"value":"code_execution_or_equivalent","evidence":"memory corruption reaches an attacker-controlled write"},"existing_capability":{"value":"none","evidence":"no prior host access is required"}},
 			  "attempts":[
 			    {"number":1,"outcome":"reproduced","evidence":"boom","failure_class":"panic","crash_site":"parser.go:42"},
 			    {"number":2,"outcome":"reproduced","evidence":"boom","failure_class":"panic","crash_site":"parser.go:42"},
@@ -246,7 +258,8 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 			"../../skills/verify/schema.json",
 			`{"status":"fixed","attack_tree":{"goal":"Trigger parser panic","root_id":"AT1","verdict":"blocked","nodes":[
 			  {"id":"AT1","parent_id":null,"kind":"goal","description":"Trigger parser panic","status":"blocked","evidence":"length guard rejects input"},
-			  {"id":"AT2","parent_id":"AT1","kind":"precondition","description":"Bypass length guard","status":"blocked","evidence":"parser.go:31 returns before the sink"}],"blockers":["parser.go:31 rejects oversized input"]},
+				  {"id":"AT2","parent_id":"AT1","kind":"precondition","description":"Bypass length guard","status":"blocked","evidence":"parser.go:31 returns before the sink"}],"blockers":["parser.go:31 rejects oversized input"]},
+				  "severity_prerequisites":{"attacker_position":{"value":"remote_unauthenticated","evidence":"public parser accepts remote bytes"},"user_interaction":{"value":"none","evidence":"request alone reaches the guard"},"outcome_determinism":{"value":"deterministic","evidence":"the guard blocks 3/3 attempts"},"impact":{"value":"code_execution_or_equivalent","evidence":"the original claim is memory corruption"},"existing_capability":{"value":"none","evidence":"no prior host access is required"}},
 			  "attempts":[
 			    {"number":1,"outcome":"not_reproduced","evidence":"guard returned error","failure_class":"","crash_site":""},
 			    {"number":2,"outcome":"not_reproduced","evidence":"guard returned error","failure_class":"","crash_site":""},
@@ -262,8 +275,9 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 		{
 			"../../skills/verify/schema.json",
 			`{"status":"deferred","preflight":{"classification":"external-reach","justification":"curl https://example.com/callback"},
-			  "attack_tree":{"goal":"Reach callback","root_id":"AT1","verdict":"not_attempted","nodes":[
-			    {"id":"AT1","parent_id":null,"kind":"goal","description":"Reach callback","status":"not_attempted","evidence":"preflight requires external reach"}],"blockers":[]},
+				  "attack_tree":{"goal":"Reach callback","root_id":"AT1","verdict":"not_attempted","nodes":[
+				    {"id":"AT1","parent_id":null,"kind":"goal","description":"Reach callback","status":"not_attempted","evidence":"preflight requires external reach"}],"blockers":[]},
+				  "severity_prerequisites":{"attacker_position":{"value":"not_attempted","evidence":"external-reach preflight blocked evaluation"},"user_interaction":{"value":"not_attempted","evidence":"external-reach preflight blocked evaluation"},"outcome_determinism":{"value":"not_attempted","evidence":"external-reach preflight blocked evaluation"},"impact":{"value":"not_attempted","evidence":"external-reach preflight blocked evaluation"},"existing_capability":{"value":"not_attempted","evidence":"external-reach preflight blocked evaluation"}},
 			  "attempts":[
 			    {"number":1,"outcome":"not_attempted","evidence":"external reach prohibited","failure_class":"","crash_site":""},
 			    {"number":2,"outcome":"not_attempted","evidence":"external reach prohibited","failure_class":"","crash_site":""},
@@ -536,6 +550,10 @@ func TestBundledSchemas_rejectBadShapes(t *testing.T) {
 	}{
 		{"../../skills/triage/schema.json", `{"triggered":"not-a-list"}`, "/triggered"},
 		{"../../skills/triage/schema.json", `{"triggered":["Bad Name"]}`, "/triggered/0"},
+		{"../../skills/triage/schema.json", `{"release_watch":["55"]}`, "/release_watch/0"},
+		{"../../skills/bandit/schema.json",
+			`{"findings":[{"id":"F1","title":"B608","severity":"Severe","location":"app.py:9"}]}`,
+			"/findings/0/severity"},
 		{"../../skills/repo-overview/schema.json", `{"languages":"go"}`, "/languages"},
 		{"../../skills/sbom/schema.json", `{"bomFormat":"SPDX","specVersion":"1.5"}`, "/bomFormat"},
 		{"../../skills/sbom/schema.json", `{"specVersion":"1.5"}`, "bomFormat"},
@@ -593,7 +611,7 @@ func TestBundledSchemas_rejectBadShapes(t *testing.T) {
 			`{"status":"confirmed","attack_tree":{"goal":"Trigger panic","root_id":"AT1","verdict":"reachable","nodes":[
 			  {"id":"AT1","parent_id":null,"kind":"goal","description":"Trigger panic","status":"satisfied","evidence":"attempts 1-3"},
 			  {"id":"AT2","parent_id":"AT1","kind":"entry_point","description":"Call public API","status":"satisfied","evidence":"api.go:1"},
-			  {"id":"AT3","parent_id":"AT2","kind":"sink","description":"Reach sink","status":"satisfied","evidence":"x.go:1"}],"blockers":[]},"attempts":[
+				  {"id":"AT3","parent_id":"AT2","kind":"sink","description":"Reach sink","status":"satisfied","evidence":"x.go:1"}],"blockers":[]},"severity_prerequisites":{"attacker_position":{"value":"remote_unauthenticated","evidence":"public API"},"user_interaction":{"value":"none","evidence":"request only"},"outcome_determinism":{"value":"deterministic","evidence":"same input"},"impact":{"value":"code_execution_or_equivalent","evidence":"claimed panic"},"existing_capability":{"value":"none","evidence":"no prior access"}},"attempts":[
 			  {"number":1,"outcome":"reproduced","evidence":"x","failure_class":"panic","crash_site":"x.go:1"},
 			  {"number":2,"outcome":"reproduced","evidence":"x","failure_class":"panic","crash_site":"x.go:1"},
 			  {"number":3,"outcome":"not_reproduced","evidence":"clean","failure_class":"","crash_site":""}],
@@ -607,7 +625,8 @@ func TestBundledSchemas_rejectBadShapes(t *testing.T) {
 			"/attempts/2/outcome"},
 		{"../../skills/verify/schema.json",
 			`{"status":"not_attempted","attack_tree":{"goal":"Trigger panic","root_id":"AT1","verdict":"not_attempted","nodes":[
-			  {"id":"AT1","parent_id":null,"kind":"goal","description":"Trigger panic","status":"satisfied","evidence":"setup failed"}],"blockers":[]},
+				  {"id":"AT1","parent_id":null,"kind":"goal","description":"Trigger panic","status":"satisfied","evidence":"setup failed"}],"blockers":[]},
+				  "severity_prerequisites":{"attacker_position":{"value":"not_attempted","evidence":"setup failed"},"user_interaction":{"value":"not_attempted","evidence":"setup failed"},"outcome_determinism":{"value":"not_attempted","evidence":"setup failed"},"impact":{"value":"not_attempted","evidence":"setup failed"},"existing_capability":{"value":"not_attempted","evidence":"setup failed"}},
 			  "attempts":[
 			  {"number":1,"outcome":"not_attempted","evidence":"setup failed","failure_class":"","crash_site":""},
 			  {"number":2,"outcome":"not_attempted","evidence":"setup failed","failure_class":"","crash_site":""},
@@ -863,6 +882,13 @@ func TestVerifySchema_rejectsAttackTreeVerdictContradictions(t *testing.T) {
 			},
 			"blockers": []any{},
 		},
+		"severity_prerequisites": map[string]any{
+			"attacker_position":   map[string]any{"value": "remote_unauthenticated", "evidence": "public API"},
+			"user_interaction":    map[string]any{"value": "none", "evidence": "request only"},
+			"outcome_determinism": map[string]any{"value": "deterministic", "evidence": "3/3 attempts"},
+			"impact":              map[string]any{"value": "code_execution_or_equivalent", "evidence": "code execution"},
+			"existing_capability": map[string]any{"value": "none", "evidence": "no prior access"},
+		},
 		"attempts": []any{
 			map[string]any{"number": 1, "outcome": "reproduced", "evidence": "boom", "failure_class": "panic", "crash_site": "parser.go:42"},
 			map[string]any{"number": 2, "outcome": "reproduced", "evidence": "boom", "failure_class": "panic", "crash_site": "parser.go:42"},
@@ -930,6 +956,27 @@ func TestVerifySchema_rejectsAttackTreeVerdictContradictions(t *testing.T) {
 				delete(report["criteria"].(map[string]any), "control_bypass")
 			},
 			wantErr: "/criteria",
+		},
+		{
+			name: "missing severity prerequisites",
+			mutate: func(report map[string]any) {
+				delete(report, "severity_prerequisites")
+			},
+			wantErr: "missing property 'severity_prerequisites'",
+		},
+		{
+			name: "invalid attacker position",
+			mutate: func(report map[string]any) {
+				report["severity_prerequisites"].(map[string]any)["attacker_position"].(map[string]any)["value"] = "internet"
+			},
+			wantErr: "/severity_prerequisites/attacker_position",
+		},
+		{
+			name: "active report cannot skip prerequisite",
+			mutate: func(report map[string]any) {
+				report["severity_prerequisites"].(map[string]any)["user_interaction"].(map[string]any)["value"] = "not_attempted"
+			},
+			wantErr: "/severity_prerequisites/user_interaction/value",
 		},
 		{
 			name: "unavailable control resolution with matched IDs",

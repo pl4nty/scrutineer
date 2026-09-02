@@ -19,16 +19,14 @@ import (
 	"time"
 
 	"scrutineer/internal/db"
+	"scrutineer/internal/db/dbtest"
 	"scrutineer/internal/queue"
 	"scrutineer/internal/worker"
 )
 
 func newTestServer(t testing.TB) (*Server, func()) {
 	t.Helper()
-	gdb, err := db.Open("file::memory:?cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
+	gdb := dbtest.Open(t)
 	sqldb, _ := gdb.DB()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	q, err := queue.New(sqldb, log, 0)
@@ -1503,7 +1501,10 @@ func TestFindingShow_rendersLatestVerificationScore(t *testing.T) {
 	s.DB.Create(&repo)
 	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
 	s.DB.Create(&scan)
-	finding := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "graded", Severity: "High", Status: db.FindingEnriched}
+	finding := db.Finding{
+		ScanID: scan.ID, RepositoryID: repo.ID, Title: "graded", Severity: "Medium", Status: db.FindingEnriched,
+		SeverityCaps: "authorization control held; severity capped at Medium", SeverityCalibrationIncomplete: true,
+	}
 	s.DB.Create(&finding)
 	verifyScan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: verifySkillName, FindingID: new(finding.ID)}
 	s.DB.Create(&verifyScan)
@@ -1519,7 +1520,7 @@ func TestFindingShow_rendersLatestVerificationScore(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Verification history", "confirmed", "100%", "Attack path", "Parent", "reachable", "Trigger parser panic", "AT2", "Reach parser sink", "PoC well formed", "#1", "same panic", fmt.Sprintf("scan #%d", verifyScan.ID)} {
+	for _, want := range []string{"Verification history", "confirmed", "100%", "Attack path", "Parent", "reachable", "Trigger parser panic", "AT2", "Reach parser sink", "PoC well formed", "#1", "same panic", "authorization control held; severity capped at Medium", "Calibration incomplete", fmt.Sprintf("scan #%d", verifyScan.ID)} {
 		if !strings.Contains(body, want) {
 			t.Errorf("finding page missing %q", want)
 		}

@@ -419,6 +419,16 @@ type Scan struct {
 	UpdatedAt time.Time
 }
 
+// Resumable reports whether a retry can reuse this scan's harness session and
+// workspace state. Failed scans and partial successful scans that exhausted
+// their turn budget are resumable only when the harness recorded a session.
+func (s Scan) Resumable() bool {
+	if s.SessionID == "" {
+		return false
+	}
+	return s.Status == ScanFailed || (s.Status == ScanDone && s.MaxTurnsHit)
+}
+
 // Package is one registry entry from packages.ecosyste.ms linked to this repo.
 type Package struct {
 	ID           uint `gorm:"primarykey"`
@@ -800,14 +810,20 @@ type Finding struct {
 	// used for dedup: a VID changes whenever the function's bytes change.
 	VID string `gorm:"column:vid;index"`
 
-	FindingID  string // e.g. F1, F2 within the report
-	Sinks      string // comma-joined sink IDs
-	Title      string
-	Severity   string           `gorm:"index"`
-	Confidence string           `gorm:"index"` // high/medium/low; how certain the audit is
-	Status     FindingLifecycle `gorm:"index;default:new"`
-	CWE        string
-	Location   string
+	FindingID string // e.g. F1, F2 within the report
+	Sinks     string // comma-joined sink IDs
+	Title     string
+	Severity  string `gorm:"index"`
+	// SeverityCaps is the newline-delimited set of deterministic cap reasons
+	// applied by the latest authoritative verification. Unknown calibration
+	// inputs never lower Severity; SeverityCalibrationIncomplete records that
+	// an analyst still needs to resolve them.
+	SeverityCaps                  string `gorm:"type:text"`
+	SeverityCalibrationIncomplete bool
+	Confidence                    string           `gorm:"index"` // high/medium/low; how certain the audit is
+	Status                        FindingLifecycle `gorm:"index;default:new"`
+	CWE                           string
+	Location                      string
 	// Locations is the newline-joined set of file:line positions for
 	// findings that represent one rule firing many times (#191). The
 	// first entry is duplicated in Location for the fingerprint and the
@@ -873,6 +889,13 @@ type Finding struct {
 	ReleaseURL      string
 	Resolution      FindingResolution `gorm:"index"`
 	DisclosureDraft string            `gorm:"type:text"`
+	// DisclosureTitle is the disclose skill's drafted GHSA summary
+	// (report.json's ghsa.summary), which may differ from Finding.Title:
+	// the finding's own title is set at audit time and preserved across
+	// disclose re-runs, while this is the disclosure-specific headline
+	// meant for the GHSA/VINCE form. Analyst-editable like the rest of
+	// this block.
+	DisclosureTitle string `gorm:"type:text"`
 	// SuggestedRecipients routes the disclosure to the file-level owners
 	// of Location (CODEOWNERS entries or, absent those, recent non-bot
 	// committers) because the repo-level maintainers list is too coarse
@@ -1003,6 +1026,18 @@ func (f Finding) LocationList() []string {
 		out[i] = strings.TrimSpace(out[i])
 	}
 	return out
+}
+
+// SeverityCapList splits the current deterministic severity-cap projection
+// into display/API entries.
+func (f Finding) SeverityCapList() []string {
+	caps := make([]string, 0)
+	for line := range strings.SplitSeq(f.SeverityCaps, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			caps = append(caps, line)
+		}
+	}
+	return caps
 }
 
 // ExtraLocationCount is the number of grouped match positions beyond the
@@ -1516,13 +1551,23 @@ func withPragmas(dsn string) string {
 	return dsn + sep + connectionPragmas
 }
 
-func Open(dsn string) (*gorm.DB, error) {
+// Connect opens dsn with the standard pragmas and logger but performs no
+// migration. Open is Connect plus the full migration path.
+func Connect(dsn string) (*gorm.DB, error) {
 	cfg := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	}
 	gdb, err := gorm.Open(sqlite.Open(withPragmas(dsn)), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	return gdb, nil
+}
+
+func Open(dsn string) (*gorm.DB, error) {
+	gdb, err := Connect(dsn)
+	if err != nil {
+		return nil, err
 	}
 	foundSchemaVersion, err := checkDatabaseSchemaVersion(gdb)
 	if err != nil {

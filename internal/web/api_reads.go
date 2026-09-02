@@ -262,10 +262,10 @@ func (s *Server) apiListDependencies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// apiListDependencyFindings returns findings on any library repository whose
-// published package appears in this repository's dependency list. The skill
-// token still only authorises the caller's own repo; the cross-repo read is
-// derived from that repo's dependencies, not chosen by the caller.
+// apiListDependencyFindings returns notified or published findings on any
+// library repository whose published package appears in this repository's
+// dependency list. The caller's dependency rows select candidate libraries,
+// but unpublished findings never cross the repository boundary.
 func (s *Server) apiListDependencyFindings(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.repoScopedID(w, r)
 	if !ok {
@@ -375,6 +375,7 @@ func (s *Server) apiGetFinding(w http.ResponseWriter, r *http.Request) {
 	summary["reach"] = f.Reach
 	summary["rating"] = f.Rating
 	summary["disclosure_draft"] = f.DisclosureDraft
+	summary["disclosure_title"] = f.DisclosureTitle
 	summary["suggested_recipients"] = f.SuggestedRecipients
 	summary["suggested_fix"] = f.SuggestedFix
 	summary["suggested_fix_commit"] = f.SuggestedFixCommit
@@ -414,7 +415,7 @@ func (s *Server) apiGetFinding(w http.ResponseWriter, r *http.Request) {
 // blobs it never emits. Keep in sync with findingSummary.
 var findingSummaryColumns = []string{
 	"id", "scan_id", "repository_id", "finding_id", "commit", "sinks", "title",
-	"severity", "status", "cwe", "location", "vid", "affected", "reachability",
+	"severity", "severity_caps", "severity_calibration_incomplete", "status", "cwe", "location", "vid", "affected", "reachability",
 	"quality_tier", "cve_id", "ghsa_id", "cvss_vector", "cvss_score",
 	"fix_version", "fix_commit", "resolution", "assignee", "missed_count",
 	"dup_check", "novelty", "novelty_checked_commit", "novelty_checked_at",
@@ -423,34 +424,36 @@ var findingSummaryColumns = []string{
 
 func findingSummary(f db.Finding) map[string]any {
 	return map[string]any{
-		"id":                     f.ID,
-		"scan_id":                f.ScanID,
-		"repository_id":          f.RepositoryID,
-		"finding_id":             f.FindingID,
-		"commit":                 f.Commit,
-		"sinks":                  f.Sinks,
-		"title":                  f.Title,
-		"severity":               f.Severity,
-		statusKey:                string(f.Status),
-		"cwe":                    f.CWE,
-		"location":               f.Location,
-		"vid":                    f.VID,
-		"affected":               f.Affected,
-		"reachability":           f.Reachability,
-		"quality_tier":           f.QualityTier,
-		"cve_id":                 f.CVEID,
-		"ghsa_id":                f.GHSAID,
-		"cvss_vector":            f.CVSSVector,
-		"cvss_score":             f.CVSSScore,
-		"fix_version":            f.FixVersion,
-		"fix_commit":             f.FixCommit,
-		"resolution":             string(f.Resolution),
-		"assignee":               f.Assignee,
-		"missed_count":           f.MissedCount,
-		"dup_check":              f.DupCheck,
-		"novelty":                string(f.Novelty),
-		"novelty_checked_commit": f.NoveltyCheckedCommit,
-		"novelty_checked_at":     f.NoveltyCheckedAt,
-		"production_viability":   f.ProductionViability,
+		"id":                              f.ID,
+		"scan_id":                         f.ScanID,
+		"repository_id":                   f.RepositoryID,
+		"finding_id":                      f.FindingID,
+		"commit":                          f.Commit,
+		"sinks":                           f.Sinks,
+		"title":                           f.Title,
+		"severity":                        f.Severity,
+		"severity_caps":                   f.SeverityCapList(),
+		"severity_calibration_incomplete": f.SeverityCalibrationIncomplete,
+		statusKey:                         string(f.Status),
+		"cwe":                             f.CWE,
+		"location":                        f.Location,
+		"vid":                             f.VID,
+		"affected":                        f.Affected,
+		"reachability":                    f.Reachability,
+		"quality_tier":                    f.QualityTier,
+		"cve_id":                          f.CVEID,
+		"ghsa_id":                         f.GHSAID,
+		"cvss_vector":                     f.CVSSVector,
+		"cvss_score":                      f.CVSSScore,
+		"fix_version":                     f.FixVersion,
+		"fix_commit":                      f.FixCommit,
+		"resolution":                      string(f.Resolution),
+		"assignee":                        f.Assignee,
+		"missed_count":                    f.MissedCount,
+		"dup_check":                       f.DupCheck,
+		"novelty":                         string(f.Novelty),
+		"novelty_checked_commit":          f.NoveltyCheckedCommit,
+		"novelty_checked_at":              f.NoveltyCheckedAt,
+		"production_viability":            f.ProductionViability,
 	}
 }

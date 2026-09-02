@@ -64,7 +64,7 @@ To onboard a whole GitHub org at once, open **Add multiple** → **Import a whol
 
 You can also scan a directory on disk, useful before pushing, or for code not hosted on a git forge. Paste an absolute path (`/path/to/project`) in the same **Add repository** field. Scrutineer copies the directory into a per-scan workspace and runs the default skill set; skills that need a forge URL or ecosyste.ms enrichment (`advisories`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`) are skipped automatically. Symlinks are recreated as-is rather than dereferenced during the copy; in container mode their targets then resolve inside the container, so host files reached only through such a link are not visible to skills. Under `--no-container` the kernel dereferences them normally, so only point scrutineer at trees you trust.
 
-The optional analysis tools (semgrep, zizmor, git-pkgs, brief) are bundled in the runner image, so you don't need them installed locally when the container runner is in use.
+The optional analysis tools (semgrep, bandit, zizmor, git-pkgs, brief) are bundled in the runner image, so you don't need them installed locally when the container runner is in use.
 
 ## Git authentication
 
@@ -157,13 +157,14 @@ Adding a repo enqueues the `triage` skill, whose SKILL.md lists the further skil
 | `history` | Mines Git history for security fixes that never received an advisory, with ancestry-checked incremental caching and explicit partial-history reporting |
 | `threat-model` | Derives the project's security contract (components, entry-point trust table, claimed and disclaimed properties) for the deep-dive to load |
 | `semgrep` | Static analysis mapped into findings shape |
+| `bandit` | Python-only static analysis mapped into findings shape, carrying bandit's own confidence level; runs alongside `semgrep` on repositories with Python |
 | `vuln-scan` | High-recall model-backed static candidate scan adapted from Anthropic's defending-code reference harness |
 | `zizmor` | GitHub Actions workflow audit enriched with bundled trust-boundary, credential, and supply-chain guidance |
 | `ingest` | Normalizes external reports in arbitrary formats into findings when `/v1/import` cannot recognise the payload |
 | `security-deep-dive` | The model-backed audit producing structured findings |
 | `advisory-deep-dive` | Re-audits every past advisory against its fix commit for a fix bypass, an incomplete fix, or the same bug class in sibling code the patch never touched; the deep-dive scoped to the advisory space |
 | `finding-dedup` | Compares open findings and marks overlapping reports as duplicates |
-| `verify` | Re-checks one finding against current HEAD, records an evidenced attack tree, runs three isolated attempts, scores five fixed evidence criteria, and gates the verdict on host-matched design controls |
+| `verify` | Re-checks one finding against current HEAD, records an evidenced attack tree and typed attacker prerequisites, runs three isolated attempts, scores five fixed evidence criteria, gates the verdict on host-matched design controls, and applies deterministic severity caps from reconciled controls and verified prerequisites |
 | `verify-windows` | Verifies one finding against the Windows artifact the project actually ships — the release binary, MSI, MSIX or package pulled from its published location and extracted or installed — or a build from the project's own MSBuild/CMake toolchain when no release carries the vulnerable code. Same rubric and lifecycle as `verify`; a reproduction script that re-implements the target's logic cannot confirm a finding here. Needs a Windows host running with `--no-container`; see [Windows artifact validation](docs/windows-artifact-validation.md) |
 | `critic` | Assesses whether a true-positive finding can affect a real release build, stores an append-only attack-path record, and marks release paths as viable, non-viable, sample/test-only, or conditional |
 | `revalidate` | Cheap read-only classifier (prose + `git log`, no PoC execution) that emits true / false positive / already-fixed / uncertain; auto-enqueued for High/Critical from `security-deep-dive` and for every imported finding. Every `true_positive` chains to `critic`, and High/Critical true positives also chain to `verify` |
@@ -291,10 +292,13 @@ When the container runner is active, scrutineer auto-detects a per-ecosystem **p
 | `ruby-rails` | `tools.build:Rails` | A superset of `ruby` plus **Brakeman**, Rails-specific SAST |
 | `node` | npm/pnpm/Yarn/Bun | Node.js |
 | `go` | Go Modules | Go toolchain |
+| `scala` | sbt or Scala language detection | A superset of `java` plus **sbt** and Scala-specific reproducer guidance |
 | `java` | Maven/Gradle | JDK |
 | `dotnet` | NuGet/dotnet CLI | .NET SDK |
 | `beam` | Mix/rebar3 | Erlang/Elixir |
 | `rust` | Cargo | Rust stable + nightly, Miri, sanitizers |
+| `ocaml` | opam, `tools.build:Dune`, or OCaml language detection | opam + a compiled OCaml 5.x switch + dune |
+| `swift` | Swift Package Manager or Swift language detection | Swift toolchain + swiftly |
 | `perl` | cpanm or Perl language detection | Perl toolchain |
 | `c-cpp` | `tools.build:CMake` / `Make` / `Autotools` / `Meson`, or C/C++ language detection, after language ecosystems have had a chance to match | C/C++ build toolchain |
 
@@ -346,7 +350,7 @@ Windows hosts run scans through [Docker Desktop](https://docs.docker.com/desktop
 | `-config` | `./scrutineer.yaml` if present | Path to YAML config file |
 | `-addr` | `127.0.0.1:8080` | Listen address |
 | `-data` | `./data` | Data directory for the database and workspaces |
-| `-effort` | `high` | Claude effort level (claude backend only) |
+| `-effort` | `high` | Reasoning effort level, applied by the `claude` and `copilot` backends and ignored by `codex` and `opencode`. Copilot CLI stops at `xhigh`, so `max` is capped to it there |
 | `-skills` | - | Additional local directory to load SKILL.md files from; same-named skills override the bundled copies (repeatable) |
 | `-skills-repo` | - | `owner/repo[@ref]` or credential-free git HTTPS URL `https://host/path[@ref]` to clone skills from on startup; `@ref` pins a branch, tag or commit and the resolved SHA is recorded on every scan; private repositories use config-file-only `skills_repo_token` |
 | `-backend` | `claude` | Agent CLI the container runner execs: `claude`, `codex`, `opencode`, or `copilot`. Non-claude backends require the containerised runner |
