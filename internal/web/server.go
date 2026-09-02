@@ -106,6 +106,13 @@ type Server struct {
 	// a possibly-nil Worker. Set once by main; default off in tests.
 	MonorepoAttribution bool
 
+	// WindowsArtifactHost reports whether skills execute directly on a
+	// Windows host rather than in a Linux container, which is the only
+	// configuration where verify-windows can reach the shipped artifact.
+	// Set once by main; false in tests and on every other platform, so the
+	// finding page hides an action that could only report env-blocked.
+	WindowsArtifactHost bool
+
 	// Backend is the canonical -backend value the runner was started with
 	// (worker.HarnessName). Set once by main. resumeOpts compares it to
 	// Scan.Backend so a retry after switching backends starts fresh instead
@@ -554,6 +561,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /findings/{id}/status", s.findingStatus)
 	mux.HandleFunc("POST /findings/{id}/exploited-in-wild", s.findingExploitedInWild)
 	mux.HandleFunc("POST /findings/{id}/verify", s.findingVerify)
+	mux.HandleFunc("POST /findings/{id}/verify-windows", s.findingVerifyWindows)
 	mux.HandleFunc("POST /findings/{id}/critic", s.findingCritic)
 	mux.HandleFunc("POST /repositories/{id}/verify-all", s.repoVerifyAll)
 	mux.HandleFunc("POST /findings/{id}/disclose", s.findingDisclose)
@@ -1623,6 +1631,13 @@ func (s *Server) findingExploitedInWild(w http.ResponseWriter, r *http.Request) 
 // verifySkillName is the skill the Verify button on the finding page runs.
 const verifySkillName = "verify"
 
+// verifyWindowsSkillName re-runs the same verification rubric against the
+// project's shipped Windows artifact instead of whatever reproduction the
+// audit left behind. Its button appears only when the skill is enabled and
+// WindowsArtifactHost is set, since it needs the shipped binaries to be
+// runnable on the host executing the skill.
+const verifyWindowsSkillName = "verify-windows"
+
 // discloseSkillName is the skill the Draft disclosure button runs.
 const discloseSkillName = "disclose"
 
@@ -1644,6 +1659,10 @@ const mitigateSkillName = "mitigate"
 
 func (s *Server) findingVerify(w http.ResponseWriter, r *http.Request) {
 	s.runFindingSkill(w, r, verifySkillName, true)
+}
+
+func (s *Server) findingVerifyWindows(w http.ResponseWriter, r *http.Request) {
+	s.runFindingSkill(w, r, verifyWindowsSkillName, true)
 }
 
 func (s *Server) findingCritic(w http.ResponseWriter, r *http.Request) {
@@ -1715,6 +1734,14 @@ func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	s.redirect(w, r, fmt.Sprintf("/scans/%d", scanID))
+}
+
+// skillActive reports whether an optional skill is installed and enabled, so
+// the UI can hide a button that would only 412 on submit.
+func (s *Server) skillActive(name string) bool {
+	var n int64
+	s.DB.Model(&db.Skill{}).Where("name = ? AND active = ?", name, true).Count(&n)
+	return n > 0
 }
 
 func (s *Server) openFindingSkillScan(findingID uint, skillName string) (db.Scan, bool) {
@@ -1939,12 +1966,14 @@ func (s *Server) advisoriesList(w http.ResponseWriter, r *http.Request) {
 
 type findingWorkflowData struct {
 	db.Finding
-	VerifyInFlight     bool
-	CriticInFlight     bool
-	DiscloseInFlight   bool
-	HasDependents      bool
-	HasDisclosureDraft bool
-	DisclosureBlocked  bool
+	VerifyInFlight         bool
+	VerifyWindowsAvailable bool
+	VerifyWindowsInFlight  bool
+	CriticInFlight         bool
+	DiscloseInFlight       bool
+	HasDependents          bool
+	HasDisclosureDraft     bool
+	DisclosureBlocked      bool
 }
 
 func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
@@ -1994,6 +2023,8 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		selected[l.Name] = true
 	}
 	_, verifyInFlight := s.openFindingSkillScan(f.ID, verifySkillName)
+	_, verifyWindowsInFlight := s.openFindingSkillScan(f.ID, verifyWindowsSkillName)
+	verifyWindowsAvailable := s.WindowsArtifactHost && s.skillActive(verifyWindowsSkillName)
 	_, criticInFlight := s.openFindingSkillScan(f.ID, criticSkillName)
 	_, discloseInFlight := s.openFindingSkillScan(f.ID, discloseSkillName)
 	var currentRemediationAttemptID *uint
@@ -2058,13 +2089,15 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		"AllLabels":           labels,
 		"Selected":            selected,
 		"Workflow": findingWorkflowData{
-			Finding:            f,
-			VerifyInFlight:     verifyInFlight,
-			CriticInFlight:     criticInFlight,
-			DiscloseInFlight:   discloseInFlight,
-			HasDependents:      hasDependents,
-			HasDisclosureDraft: strings.TrimSpace(f.DisclosureDraft) != "",
-			DisclosureBlocked:  db.FindingDisclosureBlocked(f),
+			Finding:                f,
+			VerifyInFlight:         verifyInFlight,
+			VerifyWindowsAvailable: verifyWindowsAvailable,
+			VerifyWindowsInFlight:  verifyWindowsInFlight,
+			CriticInFlight:         criticInFlight,
+			DiscloseInFlight:       discloseInFlight,
+			HasDependents:          hasDependents,
+			HasDisclosureDraft:     strings.TrimSpace(f.DisclosureDraft) != "",
+			DisclosureBlocked:      db.FindingDisclosureBlocked(f),
 		},
 		"Exposures":     exposures,
 		"HasDependents": hasDependents,

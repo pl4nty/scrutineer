@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -693,6 +694,11 @@ func run(log *slog.Logger) error {
 	}
 	srv.SkillsRepoSHA = skillsRepoSHA
 	srv.Version = version
+	// verify-windows drives the project's shipped Windows binaries, so it is
+	// only offered when skills run on this Windows host rather than inside a
+	// Linux container.
+	_, containerised := runner.(*worker.ContainerRunner)
+	srv.WindowsArtifactHost = runtime.GOOS == "windows" && !containerised
 	wireEcosystems(f.ecosystemsEnrichment, w, srv, gdb, log)
 	if h, err := worker.HarnessByName(f.backend); err == nil {
 		srv.Backend = worker.HarnessName(h)
