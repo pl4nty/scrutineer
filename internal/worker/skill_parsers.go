@@ -26,10 +26,17 @@ const (
 	verifySkillName   = "verify"
 	// verifyWindowsSkillName grades the same rubric as verify but against the
 	// project's shipped Windows artifact, so it shares verify's output kind,
-	// semantic validation, and lifecycle effects.
+	// semantic validation, control staging, and lifecycle effects.
 	verifyWindowsSkillName = "verify-windows"
 	criticSkillName        = "critic"
 )
+
+// verifyRubricSkill reports whether a skill produces the verify rubric, and so
+// needs verify's control staging, report reconciliation, and ungraded-report
+// handling rather than the generic skill path.
+func verifyRubricSkill(name string) bool {
+	return name == verifySkillName || name == verifyWindowsSkillName
+}
 
 type verifyOutput struct {
 	Status     string                   `json:"status"`

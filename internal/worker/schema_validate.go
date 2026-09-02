@@ -48,6 +48,7 @@ func ValidateReportSemantics(skillName, report string) string {
 		}
 		return validateDeepDiveSinkDispositions(parsed)
 	case verifySkillName, verifyWindowsSkillName:
+		// Both produce the verify rubric; see verifyRubricSkill.
 		_, err := verification.Parse(report)
 		if errors.Is(err, verification.ErrMissingRubric) {
 			return ""
