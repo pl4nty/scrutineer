@@ -80,6 +80,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The test suite's stub binaries are POSIX shell scripts, so there is
+      # no Windows test matrix entry; cross-vetting keeps the port compiling.
+      - name: Vet Windows build
+        if: matrix.platform == 'ubuntu-24.04'
+        env:
+          GOOS: windows
+        run: go vet ./...
+
       - name: Test
         run: go test -race ./...
 

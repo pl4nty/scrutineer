@@ -178,9 +178,7 @@ func VerifySELinuxMount(ctx context.Context, rt ContainerRuntime, image string, 
 	if rt.supportsPullNever() {
 		args = append(args, "--pull", "never")
 	}
-	args = append(args,
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-	)
+	args = append(args, containerUserArgs()...)
 	if rt.needsKeepID() {
 		args = append(args, "--userns=keep-id")
 	}

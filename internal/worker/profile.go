@@ -315,7 +315,9 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 	}
 	args := rt.runArgs("--rm",
 		"--network", "none",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+	)
+	args = append(args, containerUserArgs()...)
+	args = append(args,
 		"-v", bindMount(absSrc, "/src", relabel, "ro"),
 		"--entrypoint", "brief",
 		runnerImage, "/src",
