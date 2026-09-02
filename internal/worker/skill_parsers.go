@@ -24,7 +24,11 @@ const insertBatchSize = 50
 const (
 	findingDedupSkill = "finding-dedup"
 	verifySkillName   = "verify"
-	criticSkillName   = "critic"
+	// verifyWindowsSkillName grades the same rubric as verify but against the
+	// project's shipped Windows artifact, so it shares verify's output kind,
+	// semantic validation, and lifecycle effects.
+	verifyWindowsSkillName = "verify-windows"
+	criticSkillName        = "critic"
 )
 
 type verifyOutput struct {

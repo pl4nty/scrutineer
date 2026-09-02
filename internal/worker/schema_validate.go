@@ -47,7 +47,7 @@ func ValidateReportSemantics(skillName, report string) string {
 			return "report.json is not valid JSON: " + err.Error()
 		}
 		return validateDeepDiveSinkDispositions(parsed)
-	case verifySkillName:
+	case verifySkillName, verifyWindowsSkillName:
 		_, err := verification.Parse(report)
 		if errors.Is(err, verification.ErrMissingRubric) {
 			return ""
