@@ -29,15 +29,6 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       runner_image: ${{ steps.runner.outputs.image }}
     steps:
-      - name: Require main branch
-        env:
-          REF: ${{ github.ref }}
-        run: |
-          if [[ "${REF}" != "refs/heads/main" ]]; then
-            echo "::error::Releases must run from main, not ${REF}"
-            exit 1
-          fi
-
       - name: Set up Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -190,6 +181,14 @@ jobs:
             goarch: amd64
             runner: macos-26
             run_binary: false
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+            run_binary: true
+          - goos: windows
+            goarch: arm64
+            runner: windows-2025
+            run_binary: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -219,10 +218,15 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           BUILD_DATE=$(git show -s --format=%cI "${COMMIT_SHA}")
+          BIN=scrutineer
+          if [[ "${GOOS}" == "windows" ]]; then
+            BIN=scrutineer.exe
+          fi
+          echo "BIN=${BIN}" >> "${GITHUB_ENV}"
           mkdir -p dist
           CGO_ENABLED=0 go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT_SHA} -X main.buildDate=${BUILD_DATE} -X main.defaultRunnerImage=${RUNNER_IMAGE}" \
-            -o dist/scrutineer ./cmd/scrutineer
+            -o "dist/${BIN}" ./cmd/scrutineer
 
       - name: Validate executable
         if: matrix.run_binary
@@ -230,7 +234,7 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.version }}
           RUNNER_IMAGE: ${{ needs.preflight.outputs.runner_image }}
         run: |
-          OUTPUT=$(dist/scrutineer --version)
+          OUTPUT=$("dist/${BIN}" --version)
           grep -F "scrutineer ${VERSION}" <<< "${OUTPUT}"
           grep -F "runner: ${RUNNER_IMAGE}" <<< "${OUTPUT}"
 
@@ -239,6 +243,13 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          if [[ "${GOOS}" == "windows" ]]; then
+            if [[ "$(head -c 2 "dist/${BIN}")" != "MZ" ]]; then
+              echo "::error::${GOOS}-${GOARCH} artifact is not a PE executable"
+              exit 1
+            fi
+            exit 0
+          fi
           file dist/scrutineer
           if [[ "${GOOS}" == "linux" ]]; then
             if readelf -l dist/scrutineer | grep -q 'Requesting program interpreter'; then
@@ -253,7 +264,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p package
-          cp dist/scrutineer LICENSE README.md package/
+          cp "dist/${BIN}" LICENSE README.md package/
           TAR_FLAGS=(--no-xattrs)
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
             TAR_FLAGS+=(--no-mac-metadata)
@@ -275,6 +286,10 @@ jobs:
   release:
     name: release
     needs: [preflight, build]
+    # Tagging and publishing stay main-only. Dispatching this workflow on a
+    # branch therefore exercises the whole build matrix -- the point of the
+    # branch dispatch -- and leaves its archives as run artifacts instead of
+    # cutting a release from a ref that is not main.
     if: needs.preflight.outputs.release_due == 'true'
     runs-on: ubuntu-slim
     timeout-minutes: 20

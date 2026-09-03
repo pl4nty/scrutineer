@@ -53,8 +53,14 @@ type skillContextControls struct {
 // verify run. It returns nil for every other skill, and for repositories
 // whose threat model declares no controls, so context.json does not grow a
 // block that carries no information.
+//
+// verify-windows grades the same rubric and its report is reconciled against
+// the same host-resolved match, so it must be staged the same way: without
+// this the skill never sees the control ids its report is required to echo,
+// and every run on a repository with a covering control is rejected as
+// ungraded.
 func (w *Worker) controlsContext(scan *db.Scan, skill *db.Skill) (*skillContextControls, error) {
-	if skill.Name != verifySkillName || scan.FindingID == nil {
+	if !verifyRubricSkill(skill.Name) || scan.FindingID == nil {
 		return nil, nil
 	}
 	if strings.TrimSpace(scan.Repository.ThreatModel) == "" {

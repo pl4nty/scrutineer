@@ -2,8 +2,6 @@ name: Runner Image
 
 on:
   push:
-    branches: [main]
-  pull_request:
   schedule:
     - cron: "30 6 * * *"
 
@@ -164,7 +162,10 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=sha-${{ github.sha }},enable={{is_default_branch}}
+            # Releases resolve their runner image by full commit SHA, so publish
+            # that tag from any branch a release can be dispatched on, not just
+            # the default branch.
+            type=raw,value=sha-${{ github.sha }}
             type=sha,prefix=sha-
 
       - name: Create and push manifest list
