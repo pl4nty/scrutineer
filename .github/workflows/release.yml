@@ -290,7 +290,7 @@ jobs:
     # branch therefore exercises the whole build matrix -- the point of the
     # branch dispatch -- and leaves its archives as run artifacts instead of
     # cutting a release from a ref that is not main.
-    if: needs.preflight.outputs.release_due == 'true' && github.ref == 'refs/heads/main'
+    if: needs.preflight.outputs.release_due == 'true'
     runs-on: ubuntu-slim
     timeout-minutes: 20
     permissions:
