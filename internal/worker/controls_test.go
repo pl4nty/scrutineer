@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -181,6 +182,23 @@ func TestControlsContextSkipsSkillsThatAreNotVerify(t *testing.T) {
 
 	if got := fixture.resolve(t, "revalidate"); got != nil {
 		t.Fatalf("controls = %+v for revalidate, want nil", got)
+	}
+}
+
+// verify-windows reconciles its report against the same host-resolved match as
+// verify, so it must be staged the same way. Without staging, the skill never
+// learns the ids its report is required to echo and every run on a repository
+// with a covering control is rejected as ungraded.
+func TestControlsContextStagesForVerifyWindows(t *testing.T) {
+	fixture := newControlsFixture(t, controlsModel, "internal/web/server.go:120")
+
+	got := fixture.resolve(t, verifyWindowsSkillName)
+	if got == nil {
+		t.Fatal("controls = nil for verify-windows, want the same block verify gets")
+	}
+	want := fixture.resolve(t, verifySkillName)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("verify-windows controls = %+v, want the verify block %+v", got, want)
 	}
 }
 
