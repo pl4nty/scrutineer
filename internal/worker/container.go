@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -401,7 +400,7 @@ func (d ContainerRunner) runContainerOnce(ctx context.Context, runBase []string,
 	runArgs := append(append([]string{}, runBase...), d.harnessArgv(sj)...)
 
 	cmd := exec.CommandContext(ctx, runtimeBin(d.Runtime), runArgs...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setNewProcessGroup(cmd)
 	cmd.Env = environmentWith(os.Environ(), processEnv)
 
 	stdout, err := cmd.StdoutPipe()
@@ -424,9 +423,7 @@ func (d ContainerRunner) runContainerOnce(ctx context.Context, runBase []string,
 	}
 	h.ParseStream(stdout, wrappedEmit)
 	waitErr = cmd.Wait()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	}
+	terminateProcessGroup(cmd)
 	return hitMaxTurns, sessionID, waitErr
 }
 
@@ -483,7 +480,9 @@ func (d ContainerRunner) buildContainerBaseArgs(absWork string, hnet hardenedNet
 	args := runtimeRunArgs(d.Runtime,
 		"--rm",
 		"--cap-drop", "ALL",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+	)
+	args = append(args, containerUserArgs()...)
+	args = append(args,
 		"-e", "HOME=/tmp",
 		"-e", "SEMGREP_SEND_METRICS=off",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
