@@ -41,8 +41,17 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # A host-backed profile (Profile.Host in internal/worker/profile.go)
+          # carries only a PROFILE.md: the machine is the sandbox, so there is
+          # no image to build. Skip any changed profile that has no Dockerfile,
+          # which also covers one the pull request deletes.
           profiles=$(git diff --name-only "$BASE_SHA"...HEAD -- 'docker/profiles/*/*' \
             | awk -F/ '{print $3}' | sort -u \
+            | while read -r profile; do
+                if [[ -f "docker/profiles/${profile}/Dockerfile" ]]; then
+                  printf '%s\n' "${profile}"
+                fi
+              done \
             | jq -R . | jq -sc .)
           echo "profiles=$profiles" >> "$GITHUB_OUTPUT"
           echo "changed: $profiles"
