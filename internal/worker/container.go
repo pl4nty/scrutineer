@@ -616,6 +616,10 @@ func (d ContainerRunner) resolveProfile(ctx context.Context, requested, src, sub
 			return "", defaultImg
 		}
 	}
+	if p.Host {
+		emit(Event{Kind: KindText, Text: "profile: " + p.Name + " is host-backed and this runner is containerised; using default"})
+		return "", defaultImg
+	}
 	img, err := p.EnsureImage(ctx, d.Runtime, d.ProfilesDir, defaultImg, emit)
 	// On a build failure, degrade along the FallbackProfile chain before giving
 	// up: a native profile that can't be built (runner base unreachable, ASan
@@ -1427,4 +1431,46 @@ func parseProxySidecarNames(out []byte) []string {
 		}
 	}
 	return names
+}
+
+// ProfileResolver is an optional SkillRunner extension: a runner that can say
+// which profile a scan resolves to without building or pulling anything.
+// HostSplitRunner uses it to route a host-backed profile at the host runner,
+// so the environment a repository needs is decided by what it is rather than
+// by operator configuration.
+type ProfileResolver interface {
+	ResolveProfile(ctx context.Context, sj SkillJob) Profile
+}
+
+// ResolveProfile reports the profile this job would run under. An explicit
+// request wins, exactly as in resolveProfile; otherwise the clone is probed.
+// It builds nothing, so a host-backed profile — which has no image — can be
+// recognised before anything tries to containerise it.
+func (d ContainerRunner) ResolveProfile(ctx context.Context, sj SkillJob) Profile {
+	if d.ProfilesDir == "" {
+		return Profile{}
+	}
+	if sj.Profile != "" {
+		if sj.Profile == "default" {
+			return Profile{}
+		}
+		return ProfileByName(sj.Profile)
+	}
+	srcDir, err := detectionSrcDir(filepath.Join(sj.WorkRoot, "src"), sj.SubPath)
+	if err != nil {
+		return Profile{}
+	}
+	detect := d.detectProfile
+	if detect == nil {
+		detect = DetectProfile
+	}
+	return detect(ctx, d.Runtime, d.image(), srcDir, d.SELinuxRelabel)
+}
+
+// InjectProfileGuide stages a resolved profile's PROFILE.md for a run that
+// this ContainerRunner is not itself executing. HostSplitRunner calls it for a
+// host-backed profile, whose guide describes the machine: without it the agent
+// would run on the host with none of the guidance the profile exists to carry.
+func (d ContainerRunner) InjectProfileGuide(profile, absWork string, emit func(Event)) {
+	d.injectProfileGuide(profile, absWork, emit)
 }

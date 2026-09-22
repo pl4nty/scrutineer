@@ -51,6 +51,28 @@ Before running the PoC, identify the public interface it invokes and the expecte
 
 If the supplied PoC only calls an internal helper directly, do not rewrite it into a new attack. Record the limitation as counterevidence or a proof gap and do not confirm the finding.
 
+## Verifying against a shipped artifact
+
+Some runner profiles put you on a host where the thing users actually run is a published
+build rather than the checkout — the Windows profile is the current example, and its guide
+(loaded ahead of this prompt) carries the acquisition, provenance and observation procedure
+for that platform. Where a profile says so, the reproduction is re-hosted onto that artifact:
+the finding's `validation` becomes an input *specification* — attacker-controlled input,
+shipped entry point, claimed effect — and you drive that same attack through the real build.
+You may not invent a different attack or broaden the claim; those stay forbidden exactly as
+above.
+
+When you work that way, fill the optional `artifact` block: where the build came from and how
+its identity was proved, what was executed, which files you authored and why, and any change
+you made to the machine. Two rules then bind the grading. `public_interface_to_first_party_sink`
+passes only when the executed image is that build, identified by hash in
+`artifact.execution_target`, and the input entered through an interface it exposes — a driver
+calling a public API passes, a script re-implementing the parser fails. And `confirmed`
+additionally requires `artifact.reimplementation_free`, because a confirmation that cannot name
+the shipped file it ran is not a confirmation.
+
+On any other profile, omit `artifact` entirely and grade against `./src` as described here.
+
 ## Build and test the attack tree
 
 Before executing the PoC, turn the supplied claim into a small attack tree. The root `goal` is the claimed attacker-visible security effect. Its descendants are the conditions that must hold for that goal: attacker capability, shipped public entry point, relevant transformations or guards, trust-boundary crossing, first-party sink, and final effect. Use stable ids `AT1`, `AT2`, and so on. Only the root has `parent_id: null`; every other node names an existing parent.

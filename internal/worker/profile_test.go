@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -473,6 +474,7 @@ func TestBuiltinProfiles_registrySanity(t *testing.T) {
 func assertProfileSelectorsUnique(t *testing.T) {
 	t.Helper()
 	selectors := map[[2]string]string{}
+	hostBacked := map[string]bool{}
 	for _, p := range builtinProfiles {
 		for _, m := range p.Detect {
 			if m.Category == "" || len(m.Names) == 0 {
@@ -480,10 +482,17 @@ func assertProfileSelectorsUnique(t *testing.T) {
 			}
 			for _, n := range m.Names {
 				key := [2]string{m.Category, strings.ToLower(n)}
-				if prev, ok := selectors[key]; ok {
+				// A host-backed profile claiming a selector an image-backed one
+				// also claims is deliberate, not dead code: HostUsable decides
+				// between them, so the image profile still wins on every host
+				// the host profile cannot serve. Only a clash between two
+				// profiles of the same kind makes the later one unreachable.
+				if prev, ok := selectors[key]; ok && hostBacked[prev] == p.Host {
 					t.Errorf("profile %q: selector %s:%s already claimed by %q (later profile unreachable via this selector)", p.Name, m.Category, n, prev)
+				} else if !ok {
+					selectors[key] = p.Name
+					hostBacked[p.Name] = p.Host
 				}
-				selectors[key] = p.Name
 			}
 		}
 	}
@@ -515,6 +524,11 @@ func TestRepoShipsProfileDockerfiles(t *testing.T) {
 	wd, _ := os.Getwd()
 	repoRoot := filepath.Join(wd, "..", "..")
 	for _, p := range builtinProfiles {
+		if p.Host {
+			// Host-backed: the machine is the environment, so there is no image
+			// to build. TestProfileGuidesShip still requires its PROFILE.md.
+			continue
+		}
 		path := filepath.Join(repoRoot, "docker", "profiles", p.Name, "Dockerfile")
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("expected %s profile Dockerfile to exist: %v", p.Name, err)
@@ -638,4 +652,37 @@ func brakemanVersion(t *testing.T, dockerfile string) string {
 		return ""
 	}
 	return string(m[1])
+}
+
+// The windows profile is host-backed and shares NuGet/dotnet CLI selectors with
+// the image-backed dotnet profile. That shadowing is the point on a Windows
+// host, but anywhere else the same repository must still reach dotnet: a scan
+// routed at a host that cannot run what the project ships would only report
+// env-blocked.
+func TestMatchProfile_hostProfileOnlyWhereServable(t *testing.T) {
+	got := matchProfile([]byte(briefJSON("package_manager:NuGet")))
+	want := "dotnet"
+	if runtime.GOOS == "windows" {
+		want = "windows"
+	}
+	if got.Name != want {
+		t.Errorf("NuGet matched %q, want %q on %s", got.Name, want, runtime.GOOS)
+	}
+	if got.Host && !got.HostUsable() {
+		t.Errorf("selected host profile %q this host cannot serve", got.Name)
+	}
+}
+
+// HostProfilesUsable drives whether startup wraps the runner in a split at all,
+// so it must agree with the registry rather than be maintained separately.
+func TestHostProfilesUsable_agreesWithRegistry(t *testing.T) {
+	var want bool
+	for _, p := range builtinProfiles {
+		if p.Host && p.HostUsable() {
+			want = true
+		}
+	}
+	if got := HostProfilesUsable(); got != want {
+		t.Errorf("HostProfilesUsable() = %v, want %v on %s", got, want, runtime.GOOS)
+	}
 }

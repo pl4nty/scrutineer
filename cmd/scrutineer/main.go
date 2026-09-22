@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -744,11 +743,6 @@ func run(log *slog.Logger) error {
 	}
 	srv.SkillsRepoSHA = skillsRepoSHA
 	srv.Version = version
-	// verify-windows drives the project's shipped Windows binaries, so it is
-	// only offered when skills run on this Windows host rather than inside a
-	// Linux container.
-	_, containerised := runner.(*worker.ContainerRunner)
-	srv.WindowsArtifactHost = runtime.GOOS == "windows" && !containerised
 	wireEcosystems(f.ecosystemsEnrichment, w, srv, gdb, log)
 	if h, err := worker.HarnessByName(f.backend); err == nil {
 		srv.Backend = worker.HarnessName(h)
@@ -1175,13 +1169,18 @@ func enforceCodexAccountAuthConcurrency(f *flags, log *slog.Logger) {
 //
 //nolint:ireturn // wraps or passes through the SkillRunner it is given
 func splitHostSkills(f *flags, runner worker.SkillRunner, local worker.LocalClaude, hostBase string, log *slog.Logger) worker.SkillRunner {
-	if len(f.hostSkills) == 0 {
+	if len(f.hostSkills) == 0 && !worker.HostProfilesUsable() {
 		return runner
 	}
-	if f.hardenedRuntimeOnly {
+	if f.hardenedRuntimeOnly && len(f.hostSkills) > 0 {
 		log.Warn("--hardened-runtime-only does not cover host_skills (no container to harden)", "skills", f.hostSkills)
 	}
-	log.Info("host_skills set, running those skills with the local runner (no isolation)", "skills", f.hostSkills)
+	switch {
+	case len(f.hostSkills) > 0:
+		log.Info("host_skills set, running those skills with the local runner (no isolation)", "skills", f.hostSkills)
+	default:
+		log.Info("host-backed runner profiles are available here; a scan resolving to one runs on the host (no isolation)")
+	}
 	return worker.HostSplitRunner{Container: runner, Host: local, HostSkills: f.hostSkills, HostAPIBase: hostBase}
 }
 
