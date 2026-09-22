@@ -1433,38 +1433,29 @@ func parseProxySidecarNames(out []byte) []string {
 	return names
 }
 
-// ProfileResolver is an optional SkillRunner extension: a runner that can say
-// which profile a scan resolves to without building or pulling anything.
-// HostSplitRunner uses it to route a host-backed profile at the host runner,
-// so the environment a repository needs is decided by what it is rather than
-// by operator configuration.
-type ProfileResolver interface {
-	ResolveProfile(ctx context.Context, sj SkillJob) Profile
-}
-
-// ResolveProfile reports the profile this job would run under. An explicit
-// request wins, exactly as in resolveProfile; otherwise the clone is probed.
-// It builds nothing, so a host-backed profile — which has no image — can be
-// recognised before anything tries to containerise it.
-func (d ContainerRunner) ResolveProfile(ctx context.Context, sj SkillJob) Profile {
+// ResolveHostProfile reports the host-backed profile this repository needs, or
+// the zero Profile when none applies. It builds and pulls nothing: it exists so
+// HostSplitRunner can give a host-bound run the right guide, and it answers a
+// different question from resolveProfile, which still owns image selection for
+// the containerised path.
+func (d ContainerRunner) ResolveHostProfile(ctx context.Context, sj SkillJob) Profile {
 	if d.ProfilesDir == "" {
 		return Profile{}
 	}
 	if sj.Profile != "" {
-		if sj.Profile == "default" {
-			return Profile{}
+		// An explicit choice is honoured, but only if it really is host-backed
+		// and servable here; anything else is an image request and not ours.
+		p := ProfileByName(sj.Profile)
+		if p.Host && p.HostUsable() {
+			return p
 		}
-		return ProfileByName(sj.Profile)
+		return Profile{}
 	}
 	srcDir, err := detectionSrcDir(filepath.Join(sj.WorkRoot, "src"), sj.SubPath)
 	if err != nil {
 		return Profile{}
 	}
-	detect := d.detectProfile
-	if detect == nil {
-		detect = DetectProfile
-	}
-	return detect(ctx, d.Runtime, d.image(), srcDir, d.SELinuxRelabel)
+	return DetectHostProfile(ctx, d.Runtime, d.image(), srcDir, d.SELinuxRelabel)
 }
 
 // InjectProfileGuide stages a resolved profile's PROFILE.md for a run that

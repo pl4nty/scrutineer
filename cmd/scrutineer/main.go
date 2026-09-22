@@ -1169,18 +1169,13 @@ func enforceCodexAccountAuthConcurrency(f *flags, log *slog.Logger) {
 //
 //nolint:ireturn // wraps or passes through the SkillRunner it is given
 func splitHostSkills(f *flags, runner worker.SkillRunner, local worker.LocalClaude, hostBase string, log *slog.Logger) worker.SkillRunner {
-	if len(f.hostSkills) == 0 && !worker.HostProfilesUsable() {
+	if len(f.hostSkills) == 0 {
 		return runner
 	}
-	if f.hardenedRuntimeOnly && len(f.hostSkills) > 0 {
+	if f.hardenedRuntimeOnly {
 		log.Warn("--hardened-runtime-only does not cover host_skills (no container to harden)", "skills", f.hostSkills)
 	}
-	switch {
-	case len(f.hostSkills) > 0:
-		log.Info("host_skills set, running those skills with the local runner (no isolation)", "skills", f.hostSkills)
-	default:
-		log.Info("host-backed runner profiles are available here; a scan resolving to one runs on the host (no isolation)")
-	}
+	log.Info("host_skills set, running those skills with the local runner (no isolation)", "skills", f.hostSkills)
 	return worker.HostSplitRunner{Container: runner, Host: local, HostSkills: f.hostSkills, HostAPIBase: hostBase}
 }
 

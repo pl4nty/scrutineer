@@ -279,6 +279,12 @@ func TestMatchProfile_everyProfileReachable(t *testing.T) {
 		if len(p.Detect) == 0 || len(p.Detect[0].Names) == 0 {
 			t.Fatalf("profile %q has empty Detect (registrySanity should have caught this)", p.Name)
 		}
+		if p.Host {
+			// Reached through matchHostProfile, not image selection; see
+			// TestMatchHostProfile_onlyWhereServable. Asserting it here would
+			// only re-test whichever image profile shares its selectors.
+			continue
+		}
 		d := p.Detect[0]
 		got := matchProfile([]byte(briefJSON(d.Category + ":" + d.Names[0])))
 		// The match may be a more-specific earlier profile (e.g. asking for
@@ -654,35 +660,29 @@ func brakemanVersion(t *testing.T, dockerfile string) string {
 	return string(m[1])
 }
 
-// The windows profile is host-backed and shares NuGet/dotnet CLI selectors with
-// the image-backed dotnet profile. That shadowing is the point on a Windows
-// host, but anywhere else the same repository must still reach dotnet: a scan
-// routed at a host that cannot run what the project ships would only report
-// env-blocked.
-func TestMatchProfile_hostProfileOnlyWhereServable(t *testing.T) {
-	got := matchProfile([]byte(briefJSON("package_manager:NuGet")))
-	want := "dotnet"
-	if runtime.GOOS == "windows" {
-		want = "windows"
-	}
-	if got.Name != want {
-		t.Errorf("NuGet matched %q, want %q on %s", got.Name, want, runtime.GOOS)
-	}
-	if got.Host && !got.HostUsable() {
-		t.Errorf("selected host profile %q this host cannot serve", got.Name)
+// Image selection must never pick a host-backed profile, on any host: the
+// containerised skills of a Windows-targeted repository still want the dotnet
+// image, and routing the whole pipeline at the host would drop the container
+// isolation the profile system exists to provide.
+func TestMatchProfile_neverSelectsHostProfile(t *testing.T) {
+	for _, in := range []string{"package_manager:NuGet", "package_manager:dotnet CLI", "build:MSBuild"} {
+		got := matchProfile([]byte(briefJSON(in)))
+		if got.Host {
+			t.Errorf("%s selected host profile %q for an image run on %s", in, got.Name, runtime.GOOS)
+		}
 	}
 }
 
-// HostProfilesUsable drives whether startup wraps the runner in a split at all,
-// so it must agree with the registry rather than be maintained separately.
-func TestHostProfilesUsable_agreesWithRegistry(t *testing.T) {
-	var want bool
-	for _, p := range builtinProfiles {
-		if p.Host && p.HostUsable() {
-			want = true
+// The host resolver answers the other question, and only where servable.
+func TestMatchHostProfile_onlyWhereServable(t *testing.T) {
+	got := matchHostProfile([]byte(briefJSON("package_manager:NuGet")))
+	if runtime.GOOS == "windows" {
+		if got.Name != "windows" {
+			t.Errorf("host profile = %q, want windows", got.Name)
 		}
+		return
 	}
-	if got := HostProfilesUsable(); got != want {
-		t.Errorf("HostProfilesUsable() = %v, want %v on %s", got, want, runtime.GOOS)
+	if !got.IsDefault() {
+		t.Errorf("host profile = %q on %s, want none", got.Name, runtime.GOOS)
 	}
 }
