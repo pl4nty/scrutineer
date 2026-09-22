@@ -46,7 +46,16 @@ Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64' -SkipAutomaticL
 Then `msbuild <sln> /p:Configuration=Release /p:Platform=x64`,
 `dotnet publish -c Release -r win-x64`, or
 `cmake -A x64 -B build -S . ; cmake --build build --config Release`, preferring the
-repository's documented invocation. For a native memory-safety claim add
+repository's documented invocation.
+
+Which of the two .NET commands applies is the repository's choice, not yours. A
+non-SDK-style `.csproj`, a `<TargetFrameworkVersion>v4.x</TargetFrameworkVersion>`, a
+`net4x` target or a `packages.config` means .NET Framework: build it with `msbuild`
+after `nuget restore`, and note that this host is the only place it builds at all —
+the Linux `dotnet` image cannot. An SDK-style project targeting `net8.0` or later is
+cross-platform .NET and takes `dotnet build`/`dotnet publish`; it would also have built
+in the container, so if you are on the host for such a project it is because the
+*artifact* is Windows-specific, and the artifact is what you should be exercising. For a native memory-safety claim add
 `/fsanitize=address` (MSVC 2019 16.9+) to the project's own configuration rather than
 compiling files by hand, and keep `clang_rt.asan_dynamic-*.dll` reachable — the Developer
 shell puts it on `PATH`.

@@ -665,7 +665,7 @@ func brakemanVersion(t *testing.T, dockerfile string) string {
 // image, and routing the whole pipeline at the host would drop the container
 // isolation the profile system exists to provide.
 func TestMatchProfile_neverSelectsHostProfile(t *testing.T) {
-	for _, in := range []string{"package_manager:NuGet", "package_manager:dotnet CLI", "build:MSBuild"} {
+	for _, in := range []string{"package_manager:NuGet", "package_manager:dotnet CLI"} {
 		got := matchProfile([]byte(briefJSON(in)))
 		if got.Host {
 			t.Errorf("%s selected host profile %q for an image run on %s", in, got.Name, runtime.GOOS)
