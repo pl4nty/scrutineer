@@ -27,17 +27,24 @@ to, and omits it everywhere else.
 
 ## Selecting it
 
-Detection follows the same path as the other profiles: `brief` reports the repository's package
-managers, languages and build systems, and a match on NuGet, the dotnet CLI or MSBuild resolves
-the `windows` profile. Because that profile is host-backed rather than image-backed, resolving it
-routes the scan to the host runner instead of building a container image.
+Routing and profile selection are separate decisions here, and only the second one is detected.
 
-Two overrides exist, as for any profile:
+`host_skills` in the config file decides **what** runs on the host: it names the skills — `verify`,
+typically — that always run there, while every other skill keeps its profile container. Nothing
+about the repository moves a skill to the host; the operator does.
 
-- `scrutineer.requires_profile: windows` in a skill's frontmatter pins that skill to this profile.
-- `host_skills` in the config file names skills that always run on the host, regardless of the
-  detected profile. Use it when detection cannot see what you know — a repository whose Windows
-  surface is not visible to `brief`, for instance.
+Detection then decides **which guide** a host-bound run gets, following the same path as the other
+profiles: `brief` reports the repository's package managers and languages, and a match on NuGet
+(any `*.csproj`, `packages.config`, `nuget.config`, `Directory.*.props`) or the dotnet CLI
+(`*.fsproj`) resolves the `windows` profile, whose `PROFILE.md` is staged as the run's `CLAUDE.md`.
+That match is deliberately coarse — it does not try to tell .NET Framework from cross-platform
+.NET, because the guide covers both and the run is already on the host either way.
+
+The two stay apart on purpose. Image selection skips host-backed profiles entirely, so a
+Windows-targeted .NET repository still analyses inside the `dotnet` container and only the named
+skills leave it. `scrutineer.requires_profile: windows` is therefore not a way to move a skill to
+the host: for a containerised skill it degrades to the default runner image, and on a non-Windows
+host the `windows` profile is never resolved at all.
 
 ## Host setup
 

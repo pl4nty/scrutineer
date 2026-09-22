@@ -109,12 +109,22 @@ var builtinProfiles = []Profile{
 		// host for this repository, which guide does it get?" — and HostUsable
 		// confines that to a Windows host. Its PROFILE.md carries the
 		// shipped-artifact procedure the verify skill fills `artifact` from.
+		//
+		// The selectors are deliberately coarse. brief has no detector that
+		// separates .NET Framework (Windows-only: non-SDK-style .csproj,
+		// <TargetFrameworkVersion>, packages.config) from cross-platform .NET,
+		// and none is needed here: this profile only chooses a guide for a
+		// skill the operator already bound to the host, and PROFILE.md covers
+		// both flavours. Where the distinction does bite is image selection —
+		// see docker/profiles/dotnet/PROFILE.md, which tells the agent to stop
+		// and say so rather than fight a Framework build in a Linux container.
 		Name: "windows",
 		Host: true,
-		Detect: []BriefMatch{
-			{briefPackageManager, []string{"NuGet", "dotnet CLI"}},
-			{briefBuild, []string{"MSBuild"}},
-		},
+		// NuGet is brief's C# package manager (any *.csproj, packages.config,
+		// nuget.config, Directory.*.props); "dotnet CLI" is the F# one
+		// (*.fsproj). brief emits no MSBuild detection, so there is nothing to
+		// match in the build category.
+		Detect: pm("NuGet", "dotnet CLI"),
 	},
 	{
 		// brief's phpize detector looks for PHP_ARG_/PHP_NEW_EXTENSION in
