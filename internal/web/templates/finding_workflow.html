@@ -90,19 +90,6 @@
     <form method="post" action="/findings/{{$id}}/status" hx-swap="none"
           class="flex items-center gap-2 shrink-0">
       {{if eq $s "new"}}
-        {{if .VerifyWindowsAvailable}}
-          {{if .VerifyWindowsInFlight}}
-            <button type="button" class="btn-outline" disabled title="A verify-windows scan is already queued or running for this finding">
-              <i data-lucide="loader-circle" class="animate-spin"></i> Windows artifact check in progress
-            </button>
-          {{else}}
-            <button type="submit" class="btn-outline" formaction="/findings/{{$id}}/verify-windows"
-                    hx-post="/findings/{{$id}}/verify-windows"
-                    data-tooltip="Re-run the verification against the shipped Windows release binary rather than the audit's own reproduction script. Needs a Windows host running scrutineer with --no-container.">
-              <i data-lucide="package-check"></i> Verify on Windows
-            </button>
-          {{end}}
-        {{end}}
         <button type="submit" name="status" value="triaged" class="btn-outline"
                 hx-post="/findings/{{$id}}/status">
           Mark triaged
@@ -128,19 +115,6 @@
                   hx-post="/findings/{{$id}}/critic">
             <i data-lucide="route"></i> Assess viability
           </button>
-        {{end}}
-        {{if .VerifyWindowsAvailable}}
-          {{if .VerifyWindowsInFlight}}
-            <button type="button" class="btn-outline" disabled title="A verify-windows scan is already queued or running for this finding">
-              <i data-lucide="loader-circle" class="animate-spin"></i> Windows artifact check in progress
-            </button>
-          {{else}}
-            <button type="submit" class="btn-outline" formaction="/findings/{{$id}}/verify-windows"
-                    hx-post="/findings/{{$id}}/verify-windows"
-                    data-tooltip="Re-run the verification against the shipped Windows release binary rather than the audit's own reproduction script. Needs a Windows host running scrutineer with --no-container.">
-              <i data-lucide="package-check"></i> Verify on Windows
-            </button>
-          {{end}}
         {{end}}
 
       {{else if eq $s "triaged"}}

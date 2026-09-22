@@ -531,7 +531,7 @@ func reportValidationForParsing(skill *db.Skill, report string) (string, bool) {
 		return detail, false
 	}
 	detail := ValidateReportSemantics(skill.Name, report)
-	return detail, detail != "" && verifyRubricSkill(skill.Name)
+	return detail, detail != "" && skill.Name == verifySkillName
 }
 
 // parseFindingsOutput feeds the existing spec-deep parser so skill-driven

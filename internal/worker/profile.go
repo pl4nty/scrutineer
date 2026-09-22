@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,26 @@ type Profile struct {
 	// instead of silently dropping to the guide-less default runner. Empty
 	// means degrade straight to the default image.
 	FallbackProfile string
+	// Host marks a profile that is not a container image at all: resolving it
+	// routes the scan to the host runner, and its PROFILE.md describes the
+	// machine rather than an image. EnsureImage is never called for one.
+	// HostUsable gates whether the running host can actually serve it, so a
+	// repository whose ecosystem matches a host profile still falls through to
+	// an image-backed one everywhere else.
+	Host bool
+}
+
+// HostUsable reports whether this host can serve the profile. Image-backed
+// profiles are always usable — the container runtime is what runs them.
+// A host-backed profile is only usable where the host is the environment its
+// guide describes: today that means Windows, so a .NET repository scanned from
+// Linux falls through to the dotnet image instead of being routed at a host
+// that cannot execute what it ships.
+func (p Profile) HostUsable() bool {
+	if !p.Host {
+		return true
+	}
+	return runtime.GOOS == "windows"
 }
 
 // IsDefault reports whether p falls back to the configured runner image
@@ -81,6 +102,21 @@ func pm(names ...string) []BriefMatch {
 // counterparts (php). Add a new entry plus a Dockerfile under
 // docker/profiles/<name>/ to expose a profile.
 var builtinProfiles = []Profile{
+	{
+		// Host-backed, and before dotnet/java so it wins where it applies: a
+		// Windows-targeted project ships binaries the Linux runner image cannot
+		// execute, so the environment it needs is the machine scrutineer runs
+		// on. HostUsable confines that to a Windows host, so the same
+		// repository scanned from Linux falls through to dotnet or c-cpp and
+		// gets the ordinary source-tree treatment. Its PROFILE.md carries the
+		// shipped-artifact procedure the verify skill fills `artifact` from.
+		Name: "windows",
+		Host: true,
+		Detect: []BriefMatch{
+			{briefPackageManager, []string{"NuGet", "dotnet CLI"}},
+			{briefBuild, []string{"MSBuild"}},
+		},
+	},
 	{
 		// brief's phpize detector looks for PHP_ARG_/PHP_NEW_EXTENSION in
 		// config.m4, so an unrelated autoconf file doesn't route here.
@@ -304,7 +340,7 @@ func briefDetections(out []byte) map[string]map[string]bool {
 func matchProfile(briefOut []byte) Profile {
 	det := briefDetections(briefOut)
 	for _, p := range builtinProfiles {
-		if p.matches(det) {
+		if p.matches(det) && p.HostUsable() {
 			return p
 		}
 	}
@@ -551,4 +587,17 @@ func profileBuildArgs(p Profile, tag, dockerfile, contextDir, baseImage, baseDig
 
 func imageExistsLocally(ctx context.Context, rt ContainerRuntime, tag string) bool {
 	return exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", tag).Run() == nil
+}
+
+// HostProfilesUsable reports whether any registered host-backed profile can be
+// served by this host. The startup path uses it to decide whether to wrap the
+// container runner in a HostSplitRunner at all: without a host profile in play
+// and without host_skills, the split has nothing to route and is skipped.
+func HostProfilesUsable() bool {
+	for _, p := range builtinProfiles {
+		if p.Host && p.HostUsable() {
+			return true
+		}
+	}
+	return false
 }
