@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"scrutineer/internal/db"
@@ -132,29 +131,28 @@ func TestWorker_containerSkillKeepsContainerAPIBase(t *testing.T) {
 	}
 }
 
-// profileStubRunner is a container side that resolves a fixed profile and
-// records the guide it was asked to stage.
-type profileStubRunner struct {
+// hostProfileStubRunner is a container side that names a host profile for the
+// repository and records the guide it was asked to stage.
+type hostProfileStubRunner struct {
 	profile Profile
 	ran     *bool
 	guide   *string
-	gotJob  *SkillJob
 }
 
-func (r profileStubRunner) RunSkill(_ context.Context, sj SkillJob, _ func(Event)) (SkillResult, error) {
+func (r hostProfileStubRunner) RunSkill(context.Context, SkillJob, func(Event)) (SkillResult, error) {
 	*r.ran = true
-	*r.gotJob = sj
 	return SkillResult{}, nil
 }
-func (r profileStubRunner) SkillDir(workRoot, name string) string {
+func (r hostProfileStubRunner) SkillDir(workRoot, name string) string {
 	return filepath.Join(workRoot, "container", name)
 }
-func (r profileStubRunner) ResolveProfile(context.Context, SkillJob) Profile { return r.profile }
-func (r profileStubRunner) InjectProfileGuide(profile, _ string, _ func(Event)) {
+func (r hostProfileStubRunner) ResolveHostProfile(context.Context, SkillJob) Profile {
+	return r.profile
+}
+func (r hostProfileStubRunner) InjectProfileGuide(profile, _ string, _ func(Event)) {
 	*r.guide = profile
 }
 
-// hostStubRunner is the host side of the split.
 type hostStubRunner struct {
 	ran    *bool
 	gotJob *SkillJob
@@ -169,76 +167,75 @@ func (r hostStubRunner) SkillDir(workRoot, name string) string {
 	return filepath.Join(workRoot, "host", name)
 }
 
-func runSplitWithProfile(t *testing.T, p Profile) (hostRan, containerRan bool, guide string, job SkillJob) {
+func runSplitFor(t *testing.T, skill string, hostSkills []string, p Profile) (hostRan, containerRan bool, guide string, job SkillJob) {
 	t.Helper()
-	var hj, cj SkillJob
+	var hj SkillJob
 	r := HostSplitRunner{
-		Container: profileStubRunner{profile: p, ran: &containerRan, guide: &guide, gotJob: &cj},
-		Host:      hostStubRunner{ran: &hostRan, gotJob: &hj},
-		// deliberately empty: routing here must come from the profile alone
-		HostSkills: nil,
+		Container:  hostProfileStubRunner{profile: p, ran: &containerRan, guide: &guide},
+		Host:       hostStubRunner{ran: &hostRan, gotJob: &hj},
+		HostSkills: hostSkills,
 	}
-	res, err := r.RunSkill(context.Background(), SkillJob{Name: "verify", WorkRoot: t.TempDir()}, func(Event) {})
-	if err != nil {
+	if _, err := r.RunSkill(context.Background(), SkillJob{Name: skill, WorkRoot: t.TempDir()}, func(Event) {}); err != nil {
 		t.Fatalf("RunSkill: %v", err)
 	}
-	if hostRan {
-		job = hj
-		if res.Profile != p.Name {
-			t.Errorf("result profile = %q, want %q so the scan record names what ran", res.Profile, p.Name)
-		}
-	} else {
-		job = cj
-	}
-	return hostRan, containerRan, guide, job
+	return hostRan, containerRan, guide, hj
 }
 
-// A host-backed profile routes at the host without being named in HostSkills —
-// the repository's own ecosystem decides. It only does so where this host can
-// serve it, which is what keeps a .NET repo scanned from Linux on the image.
-func TestHostSplitRunner_routesHostBackedProfileByHostSupport(t *testing.T) {
-	p := Profile{Name: "windows", Host: true}
-	hostRan, containerRan, guide, job := runSplitWithProfile(t, p)
-
-	if want := p.HostUsable(); hostRan != want {
-		t.Fatalf("host ran = %v, want %v on %s", hostRan, want, runtime.GOOS)
-	}
-	if hostRan == containerRan {
-		t.Fatalf("exactly one side must run; host=%v container=%v", hostRan, containerRan)
-	}
-	if !hostRan {
-		return
+// A host-bound skill gets the repository's host profile guide: without it the
+// agent runs on the machine with none of the procedure the profile carries.
+func TestHostSplitRunner_stagesHostGuideForHostSkill(t *testing.T) {
+	hostRan, containerRan, guide, job := runSplitFor(t, "verify", []string{"verify"}, Profile{Name: "windows", Host: true})
+	if !hostRan || containerRan {
+		t.Fatalf("routing: host=%v container=%v", hostRan, containerRan)
 	}
 	if guide != "windows" {
-		t.Errorf("staged guide = %q, want the host profile's: it is the only guidance the host runner gets", guide)
+		t.Errorf("staged guide = %q, want windows", guide)
 	}
 	if job.Profile != "windows" {
-		t.Errorf("job profile = %q, want it pinned so nothing probes the clone twice", job.Profile)
+		t.Errorf("job profile = %q, want it pinned for the scan record", job.Profile)
 	}
 }
 
-// An image-backed profile stays on the container side on every host.
-func TestHostSplitRunner_keepsImageProfileOnContainer(t *testing.T) {
-	hostRan, containerRan, guide, _ := runSplitWithProfile(t, Profile{Name: "dotnet"})
+// The profile must not move a containerised skill. A Windows-targeted
+// repository still analyses in its image; only the named skills leave it,
+// which is what keeps container isolation for the rest of the pipeline.
+func TestHostSplitRunner_hostProfileDoesNotMoveContainerSkills(t *testing.T) {
+	hostRan, containerRan, guide, _ := runSplitFor(t, "triage", []string{"verify"}, Profile{Name: "windows", Host: true})
 	if hostRan || !containerRan {
-		t.Errorf("image profile routed host=%v container=%v", hostRan, containerRan)
+		t.Fatalf("a host profile moved a container skill: host=%v container=%v", hostRan, containerRan)
 	}
 	if guide != "" {
-		t.Errorf("staged a guide (%q) for a run the container side stages itself", guide)
+		t.Errorf("staged guide %q for a containerised run", guide)
 	}
 }
 
-// A container side that cannot resolve profiles at all must keep working.
+// No host profile for this repository: the host skill still runs, unguided.
+func TestHostSplitRunner_hostSkillWithoutHostProfile(t *testing.T) {
+	hostRan, _, guide, job := runSplitFor(t, "verify", []string{"verify"}, Profile{})
+	if !hostRan {
+		t.Fatal("host skill did not run")
+	}
+	if guide != "" || job.Profile != "" {
+		t.Errorf("staged guide %q / profile %q with no host profile", guide, job.Profile)
+	}
+}
+
+// A container side with no host-profile support must keep working.
 func TestHostSplitRunner_toleratesNonResolvingContainer(t *testing.T) {
-	var containerBase string
+	var base string
+	hostRan := false
 	r := HostSplitRunner{
-		Container: contextCapturingRunner{dir: "container", apiBase: &containerBase},
-		Host:      hostStubRunner{ran: new(bool), gotJob: new(SkillJob)},
+		Container:  contextCapturingRunner{dir: "container", apiBase: &base},
+		Host:       hostStubRunner{ran: &hostRan, gotJob: new(SkillJob)},
+		HostSkills: []string{"verify"},
 	}
-	if _, ok := r.Container.(ProfileResolver); ok {
-		t.Fatal("fixture must not implement ProfileResolver")
+	if _, ok := r.Container.(HostProfileResolver); ok {
+		t.Fatal("fixture must not implement HostProfileResolver")
 	}
-	if got := r.hostProfile(context.Background(), SkillJob{Name: "verify"}); !got.IsDefault() {
-		t.Errorf("hostProfile = %+v, want the zero profile", got)
+	if _, err := r.RunSkill(context.Background(), SkillJob{Name: "verify", WorkRoot: t.TempDir()}, func(Event) {}); err != nil {
+		t.Fatalf("RunSkill: %v", err)
+	}
+	if !hostRan {
+		t.Error("host skill did not run without a resolver")
 	}
 }
