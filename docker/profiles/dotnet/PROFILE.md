@@ -23,6 +23,21 @@ dotnet build --no-restore
 If restore fails with a network error the scan is offline — work from the source already present and note which checks
 you had to skip.
 
+**.NET Framework targets do not build here.** The SDK in this image is cross-platform .NET; .NET Framework is
+Windows-only and its reference assemblies are not present. Check before you spend the budget: a non-SDK-style
+`.csproj` (one with `<Project ToolsVersion=...>` and an `<Import>` of `Microsoft.CSharp.targets`), a
+`<TargetFrameworkVersion>v4.x</TargetFrameworkVersion>`, a `net4x` entry in `<TargetFramework(s)>`, a
+`packages.config`, or an `app.config`/`web.config` beside the project all say .NET Framework. `dotnet build` on one
+fails with an unresolvable framework reference, and no amount of retrying or hand-editing the project will change
+that — do not rewrite the target framework to make it compile, because what you would then be scanning is not the
+shipped code.
+
+Say so in the finding instead, and keep going: source-level analysis, `dotnet restore` of the NuGet graph for
+dependency work, and reading the code all still apply. A project that multi-targets (`<TargetFrameworks>net48;net8.0`)
+builds for the cross-platform target alone — `dotnet build -f net8.0` — which is enough for most analysis, but say
+which target you exercised. Anything that genuinely needs the Framework build, or a Windows binary, needs a Windows
+host; see `docs/windows-artifact-validation.md`.
+
 ### Creating reproducers
 
 Every finding ships with a reproducer — a small piece of code that, when run in this container, actually triggers the

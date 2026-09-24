@@ -28,6 +28,203 @@
       },
       "required": ["classification", "justification"]
     },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "install_mode",
+        "head_correspondence",
+        "reimplementation_free",
+        "execution_target",
+        "authored_files",
+        "system_changes"
+      ],
+      "description": "What was actually executed and where it came from. A verification whose execution target is not a shipped artifact or a build from the project's own toolchain cannot be confirmed.",
+      "properties": {
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "released-binary",
+            "package-registry",
+            "source-build",
+            "none"
+          ],
+          "description": "released-binary = an asset from the publisher's own release; package-registry = the published package restored from its registry; source-build = built from ./src with the project's own toolchain because no release carried the vulnerable code; none = nothing was obtained (only valid with status not_attempted or deferred)."
+        },
+        "install_mode": {
+          "type": "string",
+          "enum": [
+            "extracted",
+            "installed",
+            "package-restore",
+            "source-build",
+            "none"
+          ],
+          "description": "How the artifact reached disk. installed means machine state was changed and requires the SCRUTINEER_WINDOWS_INSTALL opt-in plus an uninstall entry in system_changes."
+        },
+        "head_correspondence": {
+          "type": "string",
+          "enum": [
+            "tested-artifact-equals-head",
+            "tested-artifact-predates-head",
+            "tested-artifact-postdates-head",
+            "unknown"
+          ],
+          "description": "Relationship between what was executed and the scanned commit. Only tested-artifact-equals-head can support a fixed verdict; a clean older release says nothing about HEAD."
+        },
+        "reimplementation_free": {
+          "type": "boolean",
+          "description": "True only when no authored file computes what the target computes: deleting every authored file must leave the vulnerability in the product."
+        },
+        "fallback_reason": {
+          "type": "string",
+          "description": "Why a release binary was not used; empty when one was."
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "release_tag": {
+              "type": "string"
+            },
+            "release_url": {
+              "type": "string"
+            },
+            "asset_name": {
+              "type": "string"
+            },
+            "download_url": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "publisher_checksum": {
+              "type": "string",
+              "enum": [
+                "matched",
+                "absent",
+                "mismatched",
+                "unchecked"
+              ]
+            },
+            "authenticode": {
+              "type": "string",
+              "enum": [
+                "valid",
+                "unsigned",
+                "invalid",
+                "unchecked"
+              ]
+            },
+            "signer": {
+              "type": "string"
+            },
+            "ancestry": {
+              "type": "string",
+              "description": "Evidence that the chosen tag is at or behind the scanned commit."
+            },
+            "contains_vulnerable_code": {
+              "type": "string",
+              "description": "Evidence that the vulnerable code is present in the chosen tag, by content rather than by date."
+            },
+            "build_commands": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "For source-build provenance: the project's own build invocation, verbatim."
+            },
+            "built_commit": {
+              "type": "string"
+            }
+          }
+        },
+        "execution_target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Full path of the image that ran. Must resolve inside the install root, package cache, or build output - never inside ./src or an authored file."
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "file_version": {
+              "type": "string"
+            },
+            "assembly_version": {
+              "type": "string"
+            },
+            "symbols": {
+              "type": "string",
+              "enum": [
+                "shipped",
+                "downloaded",
+                "built",
+                "absent"
+              ]
+            }
+          }
+        },
+        "authored_files": {
+          "type": "array",
+          "description": "Every file written for this verification, each justified as input, driver, harness or observer. A file that re-implements target logic has no legitimate role here.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "role",
+              "why"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "input",
+                  "driver",
+                  "harness",
+                  "observer"
+                ]
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          }
+        },
+        "toolchain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Interpreters, debuggers and capture tools used, with versions."
+        },
+        "system_changes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "Every mutation made to the host and how it was undone. Record the no-change case explicitly rather than leaving the list empty."
+        }
+      }
+    },
     "attack_tree": {
       "$ref": "#/$defs/attackTree"
     },

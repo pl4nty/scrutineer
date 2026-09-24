@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,26 @@ type Profile struct {
 	// instead of silently dropping to the guide-less default runner. Empty
 	// means degrade straight to the default image.
 	FallbackProfile string
+	// Host marks a profile that is not a container image at all: resolving it
+	// routes the scan to the host runner, and its PROFILE.md describes the
+	// machine rather than an image. EnsureImage is never called for one.
+	// HostUsable gates whether the running host can actually serve it, so a
+	// repository whose ecosystem matches a host profile still falls through to
+	// an image-backed one everywhere else.
+	Host bool
+}
+
+// HostUsable reports whether this host can serve the profile. Image-backed
+// profiles are always usable — the container runtime is what runs them.
+// A host-backed profile is only usable where the host is the environment its
+// guide describes: today that means Windows, so a .NET repository scanned from
+// Linux falls through to the dotnet image instead of being routed at a host
+// that cannot execute what it ships.
+func (p Profile) HostUsable() bool {
+	if !p.Host {
+		return true
+	}
+	return runtime.GOOS == "windows"
 }
 
 // IsDefault reports whether p falls back to the configured runner image
@@ -81,6 +102,30 @@ func pm(names ...string) []BriefMatch {
 // counterparts (php). Add a new entry plus a Dockerfile under
 // docker/profiles/<name>/ to expose a profile.
 var builtinProfiles = []Profile{
+	{
+		// Host-backed: resolved by matchHostProfile, never by image selection,
+		// so a .NET repository still runs its containerised skills on the
+		// dotnet image. This entry only answers "if a skill is bound to the
+		// host for this repository, which guide does it get?" — and HostUsable
+		// confines that to a Windows host. Its PROFILE.md carries the
+		// shipped-artifact procedure the verify skill fills `artifact` from.
+		//
+		// The selectors are deliberately coarse. brief has no detector that
+		// separates .NET Framework (Windows-only: non-SDK-style .csproj,
+		// <TargetFrameworkVersion>, packages.config) from cross-platform .NET,
+		// and none is needed here: this profile only chooses a guide for a
+		// skill the operator already bound to the host, and PROFILE.md covers
+		// both flavours. Where the distinction does bite is image selection —
+		// see docker/profiles/dotnet/PROFILE.md, which tells the agent to stop
+		// and say so rather than fight a Framework build in a Linux container.
+		Name: "windows",
+		Host: true,
+		// NuGet is brief's C# package manager (any *.csproj, packages.config,
+		// nuget.config, Directory.*.props); "dotnet CLI" is the F# one
+		// (*.fsproj). brief emits no MSBuild detection, so there is nothing to
+		// match in the build category.
+		Detect: pm("NuGet", "dotnet CLI"),
+	},
 	{
 		// brief's phpize detector looks for PHP_ARG_/PHP_NEW_EXTENSION in
 		// config.m4, so an unrelated autoconf file doesn't route here.
@@ -304,6 +349,13 @@ func briefDetections(out []byte) map[string]map[string]bool {
 func matchProfile(briefOut []byte) Profile {
 	det := briefDetections(briefOut)
 	for _, p := range builtinProfiles {
+		if p.Host {
+			// Host-backed profiles are not images and are resolved separately,
+			// by matchHostProfile. Skipping them here is what keeps a .NET
+			// repository on the dotnet image for its containerised skills even
+			// when the host could also serve it directly.
+			continue
+		}
 		if p.matches(det) {
 			return p
 		}
@@ -353,6 +405,30 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 		return Profile{}
 	}
 	return matchProfile(out)
+}
+
+// DetectHostProfile probes the clone the same way DetectProfile does and
+// reports the host-backed profile describing the machine this repository needs,
+// or the zero Profile when none applies. It answers a different question from
+// DetectProfile — which guide a host-bound run gets, not which image a
+// containerised one runs in — so the two never compete.
+func DetectHostProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir string, relabel bool) Profile {
+	absSrc, err := filepath.Abs(srcDir)
+	if err != nil {
+		return Profile{}
+	}
+	args := runtimeRunArgs(rt, "--rm", "--network", "none")
+	args = append(args, containerUserArgs()...)
+	args = append(args,
+		"-v", bindMount(absSrc, "/src", relabel, "ro"),
+		"--entrypoint", "brief",
+		runnerImage, "/src",
+	)
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), args...).Output()
+	if err != nil {
+		return Profile{}
+	}
+	return matchHostProfile(out)
 }
 
 // ErrNoProfilesDir is returned by EnsureImage when the worker has no
@@ -551,4 +627,19 @@ func profileBuildArgs(p Profile, tag, dockerfile, contextDir, baseImage, baseDig
 
 func imageExistsLocally(ctx context.Context, rt ContainerRuntime, tag string) bool {
 	return exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", tag).Run() == nil
+}
+
+// matchHostProfile picks the host-backed profile describing the environment
+// this repository needs on the machine, independently of the image its
+// containerised skills run in. Only consulted for a skill already bound to the
+// host: it decides which guide that run gets, never whether the run leaves the
+// container.
+func matchHostProfile(briefOut []byte) Profile {
+	det := briefDetections(briefOut)
+	for _, p := range builtinProfiles {
+		if p.Host && p.matches(det) && p.HostUsable() {
+			return p
+		}
+	}
+	return Profile{}
 }
