@@ -616,6 +616,10 @@ func (d ContainerRunner) resolveProfile(ctx context.Context, requested, src, sub
 			return "", defaultImg
 		}
 	}
+	if p.Host {
+		emit(Event{Kind: KindText, Text: "profile: " + p.Name + " is host-backed and this runner is containerised; using default"})
+		return "", defaultImg
+	}
 	img, err := p.EnsureImage(ctx, d.Runtime, d.ProfilesDir, defaultImg, emit)
 	// On a build failure, degrade along the FallbackProfile chain before giving
 	// up: a native profile that can't be built (runner base unreachable, ASan
@@ -1427,4 +1431,37 @@ func parseProxySidecarNames(out []byte) []string {
 		}
 	}
 	return names
+}
+
+// ResolveHostProfile reports the host-backed profile this repository needs, or
+// the zero Profile when none applies. It builds and pulls nothing: it exists so
+// HostSplitRunner can give a host-bound run the right guide, and it answers a
+// different question from resolveProfile, which still owns image selection for
+// the containerised path.
+func (d ContainerRunner) ResolveHostProfile(ctx context.Context, sj SkillJob) Profile {
+	if d.ProfilesDir == "" {
+		return Profile{}
+	}
+	if sj.Profile != "" {
+		// An explicit choice is honoured, but only if it really is host-backed
+		// and servable here; anything else is an image request and not ours.
+		p := ProfileByName(sj.Profile)
+		if p.Host && p.HostUsable() {
+			return p
+		}
+		return Profile{}
+	}
+	srcDir, err := detectionSrcDir(filepath.Join(sj.WorkRoot, "src"), sj.SubPath)
+	if err != nil {
+		return Profile{}
+	}
+	return DetectHostProfile(ctx, d.Runtime, d.image(), srcDir, d.SELinuxRelabel)
+}
+
+// InjectProfileGuide stages a resolved profile's PROFILE.md for a run that
+// this ContainerRunner is not itself executing. HostSplitRunner calls it for a
+// host-backed profile, whose guide describes the machine: without it the agent
+// would run on the host with none of the guidance the profile exists to carry.
+func (d ContainerRunner) InjectProfileGuide(profile, absWork string, emit func(Event)) {
+	d.injectProfileGuide(profile, absWork, emit)
 }

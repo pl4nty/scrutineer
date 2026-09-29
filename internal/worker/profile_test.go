@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -278,6 +279,12 @@ func TestMatchProfile_everyProfileReachable(t *testing.T) {
 		if len(p.Detect) == 0 || len(p.Detect[0].Names) == 0 {
 			t.Fatalf("profile %q has empty Detect (registrySanity should have caught this)", p.Name)
 		}
+		if p.Host {
+			// Reached through matchHostProfile, not image selection; see
+			// TestMatchHostProfile_onlyWhereServable. Asserting it here would
+			// only re-test whichever image profile shares its selectors.
+			continue
+		}
 		d := p.Detect[0]
 		got := matchProfile([]byte(briefJSON(d.Category + ":" + d.Names[0])))
 		// The match may be a more-specific earlier profile (e.g. asking for
@@ -473,6 +480,7 @@ func TestBuiltinProfiles_registrySanity(t *testing.T) {
 func assertProfileSelectorsUnique(t *testing.T) {
 	t.Helper()
 	selectors := map[[2]string]string{}
+	hostBacked := map[string]bool{}
 	for _, p := range builtinProfiles {
 		for _, m := range p.Detect {
 			if m.Category == "" || len(m.Names) == 0 {
@@ -480,10 +488,17 @@ func assertProfileSelectorsUnique(t *testing.T) {
 			}
 			for _, n := range m.Names {
 				key := [2]string{m.Category, strings.ToLower(n)}
-				if prev, ok := selectors[key]; ok {
+				// A host-backed profile claiming a selector an image-backed one
+				// also claims is deliberate, not dead code: HostUsable decides
+				// between them, so the image profile still wins on every host
+				// the host profile cannot serve. Only a clash between two
+				// profiles of the same kind makes the later one unreachable.
+				if prev, ok := selectors[key]; ok && hostBacked[prev] == p.Host {
 					t.Errorf("profile %q: selector %s:%s already claimed by %q (later profile unreachable via this selector)", p.Name, m.Category, n, prev)
+				} else if !ok {
+					selectors[key] = p.Name
+					hostBacked[p.Name] = p.Host
 				}
-				selectors[key] = p.Name
 			}
 		}
 	}
@@ -515,6 +530,11 @@ func TestRepoShipsProfileDockerfiles(t *testing.T) {
 	wd, _ := os.Getwd()
 	repoRoot := filepath.Join(wd, "..", "..")
 	for _, p := range builtinProfiles {
+		if p.Host {
+			// Host-backed: the machine is the environment, so there is no image
+			// to build. TestProfileGuidesShip still requires its PROFILE.md.
+			continue
+		}
 		path := filepath.Join(repoRoot, "docker", "profiles", p.Name, "Dockerfile")
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("expected %s profile Dockerfile to exist: %v", p.Name, err)
@@ -638,4 +658,31 @@ func brakemanVersion(t *testing.T, dockerfile string) string {
 		return ""
 	}
 	return string(m[1])
+}
+
+// Image selection must never pick a host-backed profile, on any host: the
+// containerised skills of a Windows-targeted repository still want the dotnet
+// image, and routing the whole pipeline at the host would drop the container
+// isolation the profile system exists to provide.
+func TestMatchProfile_neverSelectsHostProfile(t *testing.T) {
+	for _, in := range []string{"package_manager:NuGet", "package_manager:dotnet CLI"} {
+		got := matchProfile([]byte(briefJSON(in)))
+		if got.Host {
+			t.Errorf("%s selected host profile %q for an image run on %s", in, got.Name, runtime.GOOS)
+		}
+	}
+}
+
+// The host resolver answers the other question, and only where servable.
+func TestMatchHostProfile_onlyWhereServable(t *testing.T) {
+	got := matchHostProfile([]byte(briefJSON("package_manager:NuGet")))
+	if runtime.GOOS == "windows" {
+		if got.Name != "windows" {
+			t.Errorf("host profile = %q, want windows", got.Name)
+		}
+		return
+	}
+	if !got.IsDefault() {
+		t.Errorf("host profile = %q on %s, want none", got.Name, runtime.GOOS)
+	}
 }

@@ -130,3 +130,112 @@ func TestWorker_containerSkillKeepsContainerAPIBase(t *testing.T) {
 		t.Errorf("container api_base = %q, want the container host endpoint", containerBase)
 	}
 }
+
+// hostProfileStubRunner is a container side that names a host profile for the
+// repository and records the guide it was asked to stage.
+type hostProfileStubRunner struct {
+	profile Profile
+	ran     *bool
+	guide   *string
+}
+
+func (r hostProfileStubRunner) RunSkill(context.Context, SkillJob, func(Event)) (SkillResult, error) {
+	*r.ran = true
+	return SkillResult{}, nil
+}
+func (r hostProfileStubRunner) SkillDir(workRoot, name string) string {
+	return filepath.Join(workRoot, "container", name)
+}
+func (r hostProfileStubRunner) ResolveHostProfile(context.Context, SkillJob) Profile {
+	return r.profile
+}
+func (r hostProfileStubRunner) InjectProfileGuide(profile, _ string, _ func(Event)) {
+	*r.guide = profile
+}
+
+type hostStubRunner struct {
+	ran    *bool
+	gotJob *SkillJob
+}
+
+func (r hostStubRunner) RunSkill(_ context.Context, sj SkillJob, _ func(Event)) (SkillResult, error) {
+	*r.ran = true
+	*r.gotJob = sj
+	return SkillResult{}, nil
+}
+func (r hostStubRunner) SkillDir(workRoot, name string) string {
+	return filepath.Join(workRoot, "host", name)
+}
+
+func runSplitFor(t *testing.T, skill string, hostSkills []string, p Profile) (hostRan, containerRan bool, guide string, job SkillJob) {
+	t.Helper()
+	var hj SkillJob
+	r := HostSplitRunner{
+		Container:  hostProfileStubRunner{profile: p, ran: &containerRan, guide: &guide},
+		Host:       hostStubRunner{ran: &hostRan, gotJob: &hj},
+		HostSkills: hostSkills,
+	}
+	if _, err := r.RunSkill(context.Background(), SkillJob{Name: skill, WorkRoot: t.TempDir()}, func(Event) {}); err != nil {
+		t.Fatalf("RunSkill: %v", err)
+	}
+	return hostRan, containerRan, guide, hj
+}
+
+// A host-bound skill gets the repository's host profile guide: without it the
+// agent runs on the machine with none of the procedure the profile carries.
+func TestHostSplitRunner_stagesHostGuideForHostSkill(t *testing.T) {
+	hostRan, containerRan, guide, job := runSplitFor(t, "verify", []string{"verify"}, Profile{Name: "windows", Host: true})
+	if !hostRan || containerRan {
+		t.Fatalf("routing: host=%v container=%v", hostRan, containerRan)
+	}
+	if guide != "windows" {
+		t.Errorf("staged guide = %q, want windows", guide)
+	}
+	if job.Profile != "windows" {
+		t.Errorf("job profile = %q, want it pinned for the scan record", job.Profile)
+	}
+}
+
+// The profile must not move a containerised skill. A Windows-targeted
+// repository still analyses in its image; only the named skills leave it,
+// which is what keeps container isolation for the rest of the pipeline.
+func TestHostSplitRunner_hostProfileDoesNotMoveContainerSkills(t *testing.T) {
+	hostRan, containerRan, guide, _ := runSplitFor(t, "triage", []string{"verify"}, Profile{Name: "windows", Host: true})
+	if hostRan || !containerRan {
+		t.Fatalf("a host profile moved a container skill: host=%v container=%v", hostRan, containerRan)
+	}
+	if guide != "" {
+		t.Errorf("staged guide %q for a containerised run", guide)
+	}
+}
+
+// No host profile for this repository: the host skill still runs, unguided.
+func TestHostSplitRunner_hostSkillWithoutHostProfile(t *testing.T) {
+	hostRan, _, guide, job := runSplitFor(t, "verify", []string{"verify"}, Profile{})
+	if !hostRan {
+		t.Fatal("host skill did not run")
+	}
+	if guide != "" || job.Profile != "" {
+		t.Errorf("staged guide %q / profile %q with no host profile", guide, job.Profile)
+	}
+}
+
+// A container side with no host-profile support must keep working.
+func TestHostSplitRunner_toleratesNonResolvingContainer(t *testing.T) {
+	var base string
+	hostRan := false
+	r := HostSplitRunner{
+		Container:  contextCapturingRunner{dir: "container", apiBase: &base},
+		Host:       hostStubRunner{ran: &hostRan, gotJob: new(SkillJob)},
+		HostSkills: []string{"verify"},
+	}
+	if _, ok := r.Container.(HostProfileResolver); ok {
+		t.Fatal("fixture must not implement HostProfileResolver")
+	}
+	if _, err := r.RunSkill(context.Background(), SkillJob{Name: "verify", WorkRoot: t.TempDir()}, func(Event) {}); err != nil {
+		t.Fatalf("RunSkill: %v", err)
+	}
+	if !hostRan {
+		t.Error("host skill did not run without a resolver")
+	}
+}
