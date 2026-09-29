@@ -1,8 +1,10 @@
 name: Runner Image
 
 on:
+  # Any branch, not just main: a release dispatched off a branch needs that
+  # branch's own commit to carry a published sha-<commit> runner image for
+  # scripts/wait-for-runner-image.sh to resolve.
   push:
-    branches: [main]
   pull_request:
   schedule:
     - cron: "30 6 * * *"
@@ -185,7 +187,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=sha-${{ github.sha }},enable={{is_default_branch}}
+            type=raw,value=sha-${{ github.sha }}
             type=sha,prefix=sha-
 
       - name: Create and push manifest list
